@@ -813,18 +813,32 @@ def landing_lanes(lanes, queue):
 
 def release(declared, lanes=None, queue=None):
     """The release gate's settings: lanes, the release checks each a lane of its own, which eng release
-    requires a pass of at the release commit, and maxCommits, the checkpoint's limit. A name in lanes that is no lane is qk doctor's warning, not an error.
+    requires a pass of at the release commit; maxCommits and maxDays, the code commits and days since a lane's
+    last pass on main after which the toolkit's checkpoint calls it due; and limits, a release lane's own
+    maxCommits or maxDays in place of those. Queuekeeper applies no default to either: one left out is the
+    toolkit's to choose. A name in lanes that is no lane is qk doctor's warning, not an error.
     A release lane that a landing also runs is an error: a release check runs once, on the release
     commit, and no change waits for one to land."""
-    if not isinstance(declared, dict) or set(declared) - {"lanes", "maxCommits"}:
-        raise ValueError("release supports only lanes and maxCommits")
+    if not isinstance(declared, dict) or set(declared) - {"lanes", "maxCommits", "maxDays", "limits"}:
+        raise ValueError("release supports only lanes, maxCommits, maxDays and limits")
     named = declared.get("lanes", [])
     if not isinstance(named, list) or any(not isinstance(name, str) or not name.strip() for name in named) \
             or len(set(named)) != len(named) or "gate" in named:
         raise ValueError("release.lanes must list distinct lane names, never gate, which eng release checks first")
-    limit = declared.get("maxCommits", 100)
-    if type(limit) is not int or limit <= 0:
-        raise ValueError("release.maxCommits must be a positive integer")
+    for key in ("maxCommits", "maxDays"):
+        if key in declared and (type(declared[key]) is not int or declared[key] <= 0):
+            raise ValueError(f"release.{key} must be a positive integer")
+    limits = declared.get("limits", {})
+    if not isinstance(limits, dict):
+        raise ValueError("release.limits must map release lanes to their own maxCommits or maxDays")
+    for name, limit in limits.items():
+        if name not in named:
+            raise ValueError(f"release.limits names {name}, which is not in release.lanes")
+        if not isinstance(limit, dict) or set(limit) - {"maxCommits", "maxDays"}:
+            raise ValueError(f"release.limits.{name} supports only maxCommits and maxDays")
+        for key, value in limit.items():
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"release.limits.{name}.{key} must be a positive integer")
     landing = landing_lanes(lanes or {}, queue or {})
     for name in named:
         if name in landing:

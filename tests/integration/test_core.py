@@ -365,8 +365,19 @@ class ConfigurationTests(unittest.TestCase):
         invalid = [({"lanes": "device"}, "release.lanes must list"), ({"lanes": ["device", "device"]}, "release.lanes"),
                    ({"lanes": [""]}, "release.lanes"), ({"lanes": ["gate"]}, "never gate"),
                    ({"maxCommits": 0}, "maxCommits"), ({"maxCommits": True}, "maxCommits"),
+                   ({"maxDays": 0}, "release.maxDays"), ({"maxDays": "14"}, "release.maxDays"),
+                   ({"limits": []}, "release.limits must map"),
+                   ({"lanes": ["device"], "limits": {"corpus": {"maxDays": 30}}}, "names corpus, which is not in"),
+                   ({"lanes": ["device"], "limits": {"device": {"budget": 1}}}, "release.limits.device supports only"),
+                   ({"lanes": ["device"], "limits": {"device": 30}}, "release.limits.device supports only"),
+                   ({"lanes": ["device"], "limits": {"device": {"maxDays": 0}}}, "release.limits.device.maxDays"),
+                   ({"lanes": ["device"], "limits": {"device": {"maxCommits": False}}},
+                    "release.limits.device.maxCommits"),
                    ({"budget": 1}, "release supports only"), ([], "release supports only")]
-        valid = [{}, {"lanes": []}, {"lanes": ["device", "corpus"], "maxCommits": 50}]
+        valid = [{}, {"lanes": []}, {"lanes": ["device", "corpus"], "maxCommits": 50},
+                 {"lanes": ["device", "corpus"], "maxCommits": 50, "maxDays": 14,
+                  "limits": {"device": {"maxCommits": 200, "maxDays": 30}, "corpus": {"maxDays": 7}}},
+                 {"lanes": ["device"], "limits": {}}]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for declared, reason in invalid:
@@ -379,8 +390,16 @@ class ConfigurationTests(unittest.TestCase):
                     (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
                                                                        "release": declared}))
                     self.assertEqual(config.load(root)["release"], declared)
+            # Queuekeeper applies no maxCommits or maxDays of its own: one left out is the toolkit's to choose.
+            (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+                                                               "release": {"lanes": ["device"]}}))
+            self.assertNotIn("maxCommits", config.load(root)["release"])
         schema = json.loads((config.TOOLKIT_ROOT / "schemas/queuekeeper.schema.json").read_text())
-        self.assertEqual(set(schema["properties"]["release"]["properties"]), {"lanes", "maxCommits"})
+        release = schema["properties"]["release"]
+        self.assertEqual(set(release["properties"]), {"lanes", "maxCommits", "maxDays", "limits"})
+        self.assertNotIn("default", release["properties"]["maxCommits"])
+        self.assertEqual(set(release["properties"]["limits"]["additionalProperties"]["properties"]),
+                         {"maxCommits", "maxDays"})
 
     def test_a_release_lane_is_no_lane_a_landing_runs(self):
         lane = {"command": ["true"], "timeout": 60}

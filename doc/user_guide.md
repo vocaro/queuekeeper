@@ -1612,6 +1612,20 @@ owner approves a move or a higher budget.
 
 `qk doctor` also warns of a `gate` with no budget, and of a `gate` that takes a physical device.
 
+**Release lanes and when they are due.** `release.lanes` names the checks that run on the release
+commit instead of on every landing. The toolkit's checkpoint calls a release lane due once main holds
+more than `release.maxCommits` code commits, or `release.maxDays` days have passed, since that lane's
+last pass. `release.limits` gives a lane its own limits, such as a slow device lane that can run less
+often:
+
+```json
+"release": {"lanes": ["unit-device", "voiceover"], "maxCommits": 50, "maxDays": 14,
+            "limits": {"voiceover": {"maxCommits": 150, "maxDays": 30}}}
+```
+
+Each limit is a positive integer, and `limits` may name only lanes in `release.lanes`. Queuekeeper
+applies no default of its own: a limit left out is the toolkit's to choose.
+
 **Running past its usual time.** Each passing whole run of a lane adds its own time, from its
 command's start to its end without the wait for admission, to the Mac's timing history. A lane's
 baseline is the 90th percentile (p90) of its last 20 passing runs on that Mac, once there are at

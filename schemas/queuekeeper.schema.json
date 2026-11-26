@@ -956,9 +956,34 @@
           }
         },
         "maxCommits": {
-          "description": "The commits main may hold since the last commit that passed every release lane before a checkpoint is due. Without it, 100",
+          "description": "The code commits main may hold since a release lane's last pass before the checkpoint calls that lane due. Without it, the toolkit's default",
           "type": "integer",
           "minimum": 1
+        },
+        "maxDays": {
+          "description": "The days since a release lane's last pass before the checkpoint calls that lane due. Without it, the toolkit's default",
+          "type": "integer",
+          "minimum": 1
+        },
+        "limits": {
+          "description": "A release lane's own maxCommits or maxDays, in place of release.maxCommits or release.maxDays, keyed by a lane in release.lanes",
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "maxCommits": {
+                "description": "The code commits since this lane's last pass before it is due",
+                "type": "integer",
+                "minimum": 1
+              },
+              "maxDays": {
+                "description": "The days since this lane's last pass before it is due",
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
         }
       }
     }
