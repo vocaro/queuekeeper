@@ -8,7 +8,7 @@ import unittest
 from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 import host_isolation  # noqa: F401
-from queuekeeper_apple.simulators import lifecycle, pool, template
+from queuekeeper_apple.simulators import lifecycle, pool, speech, template
 
 UDID = "2BBC94CE-0D99-4A08-9763-269B5711AC97"
 RUNTIME = "com.apple.CoreSimulator.SimRuntime.iOS-27-2"
@@ -35,9 +35,12 @@ class Device:
     None for never. volumes: what the volume reads after each mute, in turn, then 0. cues: what VoiceOver's
     sound-cue switch reads after it is written, or a number for a write that exits so. voices: the seconds
     each use of the voices program takes to list the voices, in turn, None for no answer within its limit;
-    reboot: what bootstatus exits after the second boot."""
+    reboot: what bootstatus exits after the second boot. publishes: the clock's reading from which SpringBoard
+    has published its audio state, None for never: until then its ringer state and the volume read 0 whatever
+    the mute, and when it publishes after the start the volume reads 60, SpringBoard's own."""
     def __init__(self, clock, speaks_after=50, volumes=(), boot=0, bootstatus=0, stuck_on=False, cues="0",
-                 voices=(57.0, 24.0), reboot=0):
+                 voices=(57.0, 24.0), reboot=0, publishes=0):
+        self.publishes, self.came_up = publishes, publishes == 0
         self.clock, self.speaks_after, self.volumes = clock, speaks_after, list(volumes)
         self.calls, self.boot, self.bootstatus, self.stuck_on = [], boot, bootstatus, stuck_on
         self.voiceover, self.volume, self.switched, self.log = False, 60, None, None
@@ -54,6 +57,9 @@ class Device:
                 self.cue_setting = self.cues
                 return subprocess.CompletedProcess(arguments, 0, "", "")
             return subprocess.CompletedProcess(arguments, 0, self.cue_setting + "\n", "")
+        if arguments[:1] == ("spawn",) and arguments[2:3] == ("notifyutil",):
+            self.assertion(arguments[1:] == (UDID, "notifyutil", "-g", speech.RINGER_STATE), arguments)
+            return subprocess.CompletedProcess(arguments, 0, f"{speech.RINGER_STATE} {int(self.published())}\n", "")
         if arguments[:1] == ("spawn",):
             # The voices program, timed by this clock: its lines, or no answer within the limit.
             self.assertion(arguments[1:] == (UDID, TOOL), arguments)
@@ -72,6 +78,9 @@ class Device:
             return lifecycle.SimctlTimeout(arguments, timeout)
         return subprocess.CompletedProcess(arguments, status, "", "failed" if status else "")
 
+    def published(self):
+        return self.publishes is not None and self.clock() >= self.publishes
+
     @staticmethod
     def assertion(holds, detail):
         if not holds:
@@ -86,7 +95,10 @@ class Device:
             self.voiceover = "--enable" in arguments or (self.stuck_on and self.voiceover)
             if "--enable" in arguments: self.switched = self.clock()
         elif action == "info":
-            result = {"volume": self.volume} if kind == "audio" else {"enabled": self.voiceover}
+            if kind == "audio" and self.published() and not self.came_up:
+                self.came_up, self.volume = True, 60
+            volume = self.volume if self.published() else 0
+            result = {"volume": volume} if kind == "audio" else {"enabled": self.voiceover}
             # The log exists only while the warm-up streams it.
             if self.log is not None and self.log.parent.exists() and self.voiceover and \
                     self.speaks_after is not None and self.clock() - self.switched >= self.speaks_after:
@@ -132,12 +144,40 @@ class WarmTests(unittest.TestCase):
         self.assertGreaterEqual(len(readings), template.MUTE_HELD)
         self.assertFalse(device.voiceover)
         # Nothing here erases, clones or deletes: that is the pool's. Its simctl boots, reads the boot, shuts
-        # down and boots again between the voices' uses, and spawns only the sound-cue switch's write and read
-        # and the voices program.
+        # down and boots again between the voices' uses, and spawns only the sound-cue switch's write and read,
+        # the read of SpringBoard's ringer state and the voices program.
         self.assertEqual({call[1] for call in device.calls if call[0] == "simctl"}, {"boot", "bootstatus", "spawn", "shutdown"})
         self.assertEqual({call[4] for call in device.calls if call[:4] == ("simctl", "spawn", UDID, "defaults")}, {"write", "read"})
-        self.assertEqual([call[3] for call in device.calls if call[:3] == ("simctl", "spawn", UDID) and call[3] != "defaults"],
-                         [TOOL, TOOL])
+        self.assertEqual([call[3] for call in device.calls if call[:3] == ("simctl", "spawn", UDID)
+                          and call[3] not in ("defaults", "notifyutil")], [TOOL, TOOL])
+        self.assertEqual(record["volumePublished"], 0)
+
+    def test_the_mute_hold_counts_only_once_springboard_has_published_the_volume(self):
+        # SpringBoard publishes 25 s into the hold, at 60: readings of 0 before then count for nothing, so
+        # VoiceOver starts only after MUTE_HELD readings of 0 once it was muted again. Counting them from the
+        # first mute, as the warm-up did before vocaro/queuekeeper#54, would have started it before 25 s.
+        clock = Clock()
+        device = Device(clock, publishes=25)
+        record = self.warm(device, clock)
+        self.assertEqual(record["voiceOverWarmed"], True)
+        self.assertEqual(record["unmuted"], [60])
+        self.assertGreaterEqual(record["volumePublished"], 25 - 2)
+        self.assertGreaterEqual(device.switched, 25 + template.MUTE_HELD)
+        mutes = [index for index, call in enumerate(device.calls) if call[:3] == ("devicectl", "settings", "audio")]
+        on = device.order(("devicectl", "settings", "voiceover", "--device", UDID, "--enable"))[0]
+        self.assertEqual(len([index for index in mutes if index < on]), 2)
+        self.assertTrue(any(call[:4] == ("simctl", "spawn", UDID, "notifyutil") for call in device.calls[:on]))
+
+    def test_voiceover_never_starts_while_springboard_has_not_published_the_volume(self):
+        clock = Clock()
+        device = Device(clock, publishes=None)
+        record = self.warm(device, clock)
+        self.assertEqual(record["voiceOver"], f"not started: SpringBoard did not publish the volume in "
+                                              f"{speech.PUBLISH_LIMIT} s, so a mute would not last")
+        self.assertIs(record["voiceOverOff"], True)
+        self.assertFalse([call for call in device.calls
+                          if call[:3] == ("devicectl", "settings", "voiceover") and "--enable" in call])
+        self.assertFalse([call for call in device.calls if call[0] == "stream"])
 
     def test_sound_cues_are_switched_off_before_voiceover_starts(self):
         clock = Clock()
@@ -414,7 +454,8 @@ class WarmTests(unittest.TestCase):
         self.assertEqual(record["voices"], {"limit": template.VOICES_LIMIT, "settled": False,
                                             "outcome": "the voices program did not build: no SDK"})
         self.assertEqual(record["voiceOverWarmed"], True)
-        self.assertFalse([call for call in device.calls if call[:3] == ("simctl", "spawn", UDID) and call[3] != "defaults"])
+        self.assertFalse([call for call in device.calls if call[:3] == ("simctl", "spawn", UDID)
+                          and call[3] not in ("defaults", "notifyutil")])
         self.assertFalse([call for call in device.calls if call[:2] == ("simctl", "shutdown")])
 
     def test_voices_tool_builds_once_per_source_target_and_sdk_and_signs_it(self):
