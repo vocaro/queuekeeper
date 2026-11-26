@@ -43,12 +43,14 @@ for last; do :; done
 printf 'signed\\n' >> "$last"
 """
 NOTICE = [
+    "https://github.com/artemnovichkov/hinge",
     "Copyright (c) 2026 Artem Novichkov",
     "Permission is hereby granted, free of charge, to any person obtaining a copy",
     "The above copyright notice and this permission notice shall be included in all",
     "THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR",
     "SOFTWARE.",
     "https://github.com/skarol/duoctl",
+    "Copyright (c) 2026 Karolina Samorek",
 ]
 
 
@@ -193,6 +195,17 @@ class DuoPoseSourceTests(unittest.TestCase):
         self.assertEqual(missing(text), [])
         # Negative control: a notice cut short is caught.
         self.assertEqual(missing(text.replace("SOFTWARE.", "")), ["SOFTWARE."])
+
+    def test_the_helper_source_and_the_notices_keep_hinges_mit_notice_and_duoctls_credit(self):
+        def missing(text):
+            return [line for line in NOTICE if line not in text]
+        notices = (ROOT / "THIRD_PARTY_NOTICES.md").read_text()
+        self.assertIn("## hinge and duoctl", notices)
+        entry = notices.split("## hinge and duoctl", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("plugins/apple/src/queuekeeper_apple/_native/duo-pose-helper.c", entry)
+        self.assertEqual(missing(entry), [])
+        # Negative control: an entry cut short is caught.
+        self.assertEqual(missing(entry.replace("SOFTWARE.", "")), ["SOFTWARE."])
 
 
 if __name__ == "__main__":
