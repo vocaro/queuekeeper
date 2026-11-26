@@ -28,7 +28,7 @@ import tempfile
 import time
 
 from ..sources import BUILD_ROOT, ROOT, source_path
-from . import lifecycle, runtime_identity
+from . import lifecycle, runtime_identity, speech
 from .speech import CUE_DOMAIN, CUE_KEY
 
 # What the speech extension logs for each phrase VoiceOver speaks, in VoiceOver's vot log; the first one says VoiceOver has its voice.
@@ -47,11 +47,9 @@ VOICES_LIMIT = 900
 TAKE_BOOT = 300
 TAKE_VOICEOVER_LIMIT = 180
 TAKE_VOICES_LIMIT = 300
-# A member booted without the first boot's migration, kept or cloned, put its volume back to 60 3 to 17 s
-# after it was muted, in 20 of 24 sessions (vocaro-engineering#146), so VoiceOver starts only once the
-# mute has held this many readings in a row, one a second, within MUTE_LIMIT seconds.
-MUTE_HELD = 20
-MUTE_LIMIT = 90
+# VoiceOver starts only once speech.hold_mute has held the mute, as before a --voiceover run's tests:
+# MUTE_HELD readings of 0 in a row, one a second, within MUTE_LIMIT seconds of SpringBoard publishing the volume.
+MUTE_HELD, MUTE_LIMIT = speech.MUTE_HELD, speech.MUTE_LIMIT
 # The program that makes the voices' first use as a test process does: the voices' list, then each
 # language's own voice (plugins/apple/src/queuekeeper_apple/_native/simulator-voices.swift). It is built once per source, SDK
 # and target beside the toolkit, as duo_pose builds its helper, and signed ad hoc so that it runs.
@@ -96,6 +94,38 @@ def reading(devicectl, udid, kind):
         return json.loads(answer.stdout)["result"] if answer.returncode == 0 else None
     except (ValueError, KeyError, TypeError):
         return None
+
+
+def devicectl_state(devicectl):
+    """speech.state through this module's devicectl, for speech.hold_mute: after a change nothing, else the
+    reading; RuntimeError for a change that did not succeed or a reading that could not be read."""
+    def state(udid, kind, *change, timeout=20):
+        if change:
+            done = devicectl("settings", kind, "--device", udid, *change, timeout=timeout)
+            if done.returncode:
+                raise RuntimeError(f"devicectl settings {kind} {' '.join(change)} exited {done.returncode}: "
+                                   f"{(done.stderr or done.stdout).strip()}")
+            return {}
+        answer = devicectl("info", kind, "--device", udid, "--quiet", "--json-output", "-", timeout=timeout)
+        try:
+            if answer.returncode == 0: return json.loads(answer.stdout)["result"]
+        except (ValueError, KeyError, TypeError):
+            pass
+        raise RuntimeError(f"devicectl info {kind} gave no reading")
+    return state
+
+
+def simctl_run(simctl):
+    """speech.run through the warm-up's simctl, for speech.published: an `xcrun simctl` command's output, or
+    RuntimeError when it exits other than 0 or reaches its limit."""
+    def run(*command, timeout=60):
+        if command[:2] != ("xcrun", "simctl"):
+            raise ValueError(f"not a simctl command: {' '.join(command)}")
+        done = simctl(*command[2:], timeout=timeout)
+        if done.returncode:
+            raise RuntimeError(f"{' '.join(command)} exited {done.returncode}: {(done.stderr or '').strip()}")
+        return done.stdout
+    return run
 
 
 def confirmed_off(devicectl, udid):
@@ -213,11 +243,12 @@ def warm(udid, runtime, *, simctl, devicectl=devicectl, stream=log_stream, boot_
     be read. VoiceOver that stays silent past voiceover_limit, or a volume that cannot be set to 0,
     leaves the template booted and migrated but VoiceOver cold, and the record says so, as do sound
     cues that do not read off once switched off (cueSoundsOff). VoiceOver
-    speaks through the Mac's own output device, so it starts only once the volume has read 0 MUTE_HELD
-    times in a row, a reading with no answer neither counting nor breaking the run, within MUTE_LIMIT
-    seconds, and the volume is read again each second while it is on. voiceOverOff records whether
-    devicectl confirmed VoiceOver off at the end: the setting is in the data container, so a clone of
-    a template it did not confirm would boot with VoiceOver on. Whatever VoiceOver did, the system's
+    speaks through the Mac's own output device, so it starts only once speech.hold_mute has held the mute:
+    MUTE_HELD readings of 0 in a row, counted once SpringBoard has published the volume, a reading with no
+    answer neither counting nor breaking the run, within MUTE_LIMIT seconds of that; volumePublished says
+    when SpringBoard published. The volume is read again each second while VoiceOver is on. voiceOverOff
+    records whether devicectl confirmed VoiceOver off at the end: the setting is in the data container, so
+    a clone of a template it did not confirm would boot with VoiceOver on. Whatever VoiceOver did, the system's
     voices are then used twice with a reboot between, each use within voices_limit, by tool, the voices
     program (voices_tool builds it when tool is None); `voices` records both uses and whether they
     settled the template. The caller shuts the template down, however this ends."""
@@ -268,23 +299,17 @@ def start_voiceover(udid, record, *, simctl, devicectl, stream, voiceover_limit,
         record["voiceOver"] = "not started: VoiceOver's sound cues could not be switched off"
         record["voiceOverOff"] = confirmed_off(devicectl, udid)
         return
-    unmuted, held, muting = [], 0, clock()
-    devicectl("settings", "audio", "--device", udid, "--volume", "0")
-    while held < MUTE_HELD and clock() - muting < MUTE_LIMIT:
-        volume = (reading(devicectl, udid, "audio") or {}).get("volume")
-        # No answer says nothing of the volume; only a reading of another volume breaks the run.
-        if volume == 0:
-            held += 1
-        elif volume is not None:
-            held = 0
-            devicectl("settings", "audio", "--device", udid, "--volume", "0")
-            unmuted.append(volume)
-        if held < MUTE_HELD: sleep(1)
-    if held < MUTE_HELD:
-        record["voiceOver"] = f"not started: the volume did not hold at 0 for {MUTE_HELD} readings in {MUTE_LIMIT} s"
+    # Until SpringBoard publishes the volume it reads 0 and a mute does not last (vocaro/queuekeeper#54), so the
+    # hold is the one a --voiceover run makes, through this warm-up's simctl and devicectl.
+    try:
+        _, unmuted, published = speech.hold_mute(
+            udid, state_reader=devicectl_state(devicectl), sleep=sleep, clock=clock,
+            publisher=lambda udid: speech.published(udid, run_command=simctl_run(simctl)))
+    except RuntimeError as error:
+        record["voiceOver"] = f"not started: {error}"
         record["voiceOverOff"] = confirmed_off(devicectl, udid)
-        if unmuted: record["unmuted"] = unmuted
         return
+    record["volumePublished"] = round(published, 1)
     with tempfile.TemporaryDirectory(prefix="pool-template-") as directory:
         path = Path(directory) / "vot.log"
         process = stream(udid, path)
