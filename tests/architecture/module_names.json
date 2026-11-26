@@ -87,6 +87,7 @@
     "queuekeeper_apple.simulators.matrix",
     "queuekeeper_apple.simulators.pool",
     "queuekeeper_apple.simulators.runtime_identity",
+    "queuekeeper_apple.simulators.sim_key",
     "queuekeeper_apple.simulators.speech",
     "queuekeeper_apple.simulators.template",
     "queuekeeper_apple.sources",

@@ -9,6 +9,6 @@ NATIVE = Path(__file__).resolve().parent / "_native"
 
 
 def source_path(name):
-    if name not in {"duo-pose-helper.c", "simulator-voices.swift"}:
+    if name not in {"duo-pose-helper.c", "sim-key-helper.m", "simulator-voices.swift"}:
         raise KeyError(name)
     return NATIVE / name

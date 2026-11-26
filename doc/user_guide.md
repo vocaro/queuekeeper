@@ -3154,6 +3154,48 @@ lane's `results/stale-toolchain.log`. A build that fails so again, or whose plan
 such as in `~/Library/Developer/Xcode/DerivedData`, leaves the lane unmeasured, not failed: nobody's entry
 is sent back, and the hold quotes what to remove ([No verdict is not a failure](#no-verdict-is-not-a-failure)).
 
+### Simulator hardware helpers
+
+Two helpers in the toolkit's `scripts` folder give a simulator input that `simctl` and XCTest do not.
+Each takes the simulator's own UDID, never `booted`, so use a pool member you hold. Each builds a small
+native tool into the toolkit's ignored `.build` the first time, signs it ad hoc and rebuilds it only when
+its source, flags or SDK change. Both drive private, undocumented simulator API: they are development
+tooling, never part of an app, a package or a gate, and any Xcode can break them. A sent event does not
+prove the app acted on it, so confirm the result from the app.
+
+- **`scripts/duo-pose UDID DEGREES`** or **`scripts/duo-pose UDID orientation NAME`** folds, opens or
+  turns an iPhone Duo simulator, as Device Hub's controls do. It runs its helper inside the simulator.
+- **`scripts/sim-key UDID KEY...`** presses keys on the simulator's hardware keyboard, as a Mac keyboard
+  attached to Simulator.app does. No Simulator window is needed. It runs its helper on the Mac, through
+  CoreSimulator and SimulatorKit, as Meta's idb does. The keys reach whatever has keyboard focus, in order,
+  each pressed down and let go.
+
+```sh
+scripts/sim-key UDID pagedown pagedown pageup home end
+scripts/sim-key UDID 0x4b              # a keyboard usage (HID usage page 7), here Page Up
+scripts/sim-key UDID shift+right       # holds Shift, presses Right Arrow, lets go of Shift
+```
+
+A KEY is one of these names, or a keyboard usage from `0x01` to `0xff` in hexadecimal. Names are lowercase:
+
+| Names | Keys |
+|---|---|
+| `pageup`, `pagedown`, `home`, `end` | Page Up, Page Down, Home, End |
+| `left`, `right`, `up`, `down` | the arrow keys |
+| `return`, `escape`, `tab`, `space`, `delete`, `forwarddelete` | `delete` is Backspace |
+| `a` to `z`, `0` to `9`, `f1` to `f12` | letters, digits and function keys |
+| `control`, `shift`, `option`, `command` | the left-hand modifiers |
+
+`sim-key` exits with one of these codes:
+
+| Exit | Meaning |
+|---|---|
+| 0 | Every key was sent. |
+| 1 | The helper could not be built, signed or run in time. |
+| 2 | UDID is not a booted simulator of the selected Xcode's default device set. |
+| 3 | The simulator's HID service cannot be reached: a framework, class or symbol is missing, the HID session did not open, or a send failed. Report the measurement as unmeasured, not failed. |
+| 64 | An argument it does not take. Nothing was sent. |
+
 ### Foreground runs
 
 A lane that needs a Mac's screen, keyboard, pointer, focus or speech, such as Mac VoiceOver or Mac
