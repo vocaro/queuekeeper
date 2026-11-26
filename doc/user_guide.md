@@ -42,7 +42,8 @@ python3 tools/install-checkout.py
 qk --help
 ```
 
-The script:
+The script's first line says whether Queuekeeper is installed, and its last says what to do next.
+It:
 
 - puts the `qk` command on your PATH, in `~/.local/bin` unless another writable folder on your
   PATH comes first, and tells you if that folder is not on your PATH yet;

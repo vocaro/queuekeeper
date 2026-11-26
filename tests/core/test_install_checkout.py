@@ -47,8 +47,17 @@ class Setup(unittest.TestCase):
         self.assertEqual(self.package(), "".join(f"{path}\n" for path in source_paths(ROOT)))
         command = self.local / "qk"
         self.assertTrue(os.access(command, os.X_OK))
-        self.assertIn(f"`qk` now runs this checkout ({command})", done.stdout)
+        # The first line says it worked; each change is said in words, with its path; the last names the next step
+        # (vocaro/queuekeeper#359).
+        self.assertTrue(done.stdout.startswith(f"Queuekeeper is installed from {ROOT}.\n"), done.stdout)
+        self.assertIn(f"`qk` command: {command} now runs this checkout with {sys.executable}.", done.stdout)
+        self.assertIn(f"Python package: {sys.executable} now imports the queuekeeper package from this checkout",
+                      done.stdout)
+        self.assertIn(f"{next((self.home / 'userbase').rglob('queuekeeper.pth'))} names the folders", done.stdout)
+        self.assertTrue(done.stdout.rstrip().splitlines()[-1].startswith("Next: run `qk --help`"), done.stdout)
+        self.assertIn(str(ROOT / "doc/user_guide.md"), done.stdout)
         self.assertNotIn("is not on the PATH", done.stdout)
+        self.assertEqual(done.stderr, "")
         self.assertEqual(self.run_script("--check").returncode, 0)
 
     def test_the_command_runs_this_checkout_with_the_python_that_installed_it_from_any_folder(self):
@@ -85,8 +94,10 @@ class Setup(unittest.TestCase):
         done = self.run_script()
         self.assertEqual(done.returncode, 0)
         self.assertTrue((self.local / "qk").is_file())
-        self.assertIn(f"{self.local} is not on the PATH", done.stdout)
-        self.assertIn(f'export PATH="{self.local}:$PATH"', done.stdout)
+        self.assertTrue(done.stdout.startswith("Queuekeeper is installed from "), done.stdout)
+        self.assertIn(f"{self.local} is not on the PATH yet", done.stdout)
+        self.assertIn(f'Next: add {self.local} to the PATH by adding this line to ~/.zshrc, then open a new shell:\n'
+                      f'    export PATH="{self.local}:$PATH"\nThen run `qk --help`', done.stdout)
         self.assertEqual(self.run_script("--check").returncode, 1)
 
     def test_a_folder_can_be_named(self):
@@ -105,7 +116,11 @@ class Setup(unittest.TestCase):
         theirs.write_text("#!/bin/sh\necho another qk\n")
         done = self.run_script()
         self.assertEqual(done.returncode, 1)
-        self.assertIn("is a command this script did not write, so it is left as it is", done.stderr)
+        self.assertTrue(done.stderr.startswith(f"queuekeeper: installing failed: {theirs} is a command this script did "
+                                               f"not write, so it is left as it is"), done.stderr)
+        self.assertIn("Remove it, or name another folder for `qk` with --bin DIR, then run this script again.",
+                      done.stderr)
+        self.assertNotIn("is installed", done.stdout + done.stderr)
         self.assertEqual(theirs.read_text(), "#!/bin/sh\necho another qk\n")
         self.assertIsNotNone(self.package())  # the package is still made importable
         done = self.run_script("--remove")
@@ -140,7 +155,9 @@ class Setup(unittest.TestCase):
         done = self.run_script()
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(json.loads(self.limits.read_text()), {"busyLimit": 70})
-        self.assertIn(f"this Mac's CPU limit is now 70% (busyLimit in {self.limits}), below the default of 90%", done.stdout)
+        self.assertIn("CPU limit: Queuekeeper now runs one build or test at a time on this Mac once its CPU is 70% "
+                      "busy, leaving room for your own work. A Mac you add later with `qk farm add` uses 90%. To "
+                      f"change it, set busyLimit in {self.limits}.", done.stdout)
         checked = self.run_script("--check")
         self.assertEqual(checked.returncode, 0, checked.stdout)
         self.assertIn(f"{self.limits}: this Mac's CPU limit is 70% (set in {self.limits})", checked.stdout)
@@ -155,8 +172,8 @@ class Setup(unittest.TestCase):
             done = self.run_script()
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertEqual(self.limits.read_text(), text)
-            self.assertIn("this Mac's CPU limit stays ", done.stdout)
-            self.assertIn(f"which {self.limits} sets already", done.stdout)
+            self.assertIn("CPU limit: left at ", done.stdout)
+            self.assertIn(f"which busyLimit in {self.limits} sets already", done.stdout)
         self.assertEqual([path.name for path in self.slots.iterdir()], [resources.LIMITS])
 
     def test_a_limits_file_without_a_cpu_limit_gains_it_and_keeps_its_other_limits(self):
@@ -175,7 +192,10 @@ class Setup(unittest.TestCase):
             self.limits.write_text(text)
             done = self.run_script()
             self.assertEqual(done.returncode, 1, text)
-            self.assertIn("queuekeeper: this Mac's CPU limit is not set: Invalid resource limits:", done.stderr)
+            self.assertTrue(done.stderr.startswith(f"queuekeeper: installed from {ROOT}, but this Mac's CPU limit is "
+                                                   "not set: Invalid resource limits:"), done.stderr)
+            self.assertIn(f"CPU limit: not set, since {self.limits} cannot be read or written. Queuekeeper runs "
+                          "nothing on this Mac until that file is fixed", done.stderr)
             self.assertIn(said, done.stderr)
             self.assertEqual(self.limits.read_text(), text)
             # The command and the package are installed all the same.

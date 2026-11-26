@@ -73,20 +73,24 @@ def ours(path):
 
 
 def limit_set():
-    """Give this Mac its CPU limit (resources.setup_limits) and say what was done: 0, or 1 when its limits file could
-    not be read or written, which leaves the file as it is."""
+    """Give this Mac its CPU limit (resources.setup_limits) and say what was done, in words for someone who has not
+    used Queuekeeper: (what to say, None), or (what to say, the error) when its limits file could not be read or
+    written, which leaves the file as it is."""
     path = resources.limits_path()
+    default = resources.LIMIT_KEYS["busyLimit"][2](1, 1)[0]
     try:
         wrote, limit = resources.setup_limits(path)
     except (ValueError, OSError) as error:
-        print(f"queuekeeper: this Mac's CPU limit is not set: {error}", file=sys.stderr)
-        return 1
-    if wrote:
-        print(f"this Mac's CPU limit is now {limit:g}% (busyLimit in {path}), below the default of "
-              f"{resources.LIMIT_KEYS['busyLimit'][2](1, 1)[0]:g}% that a Mac added with `qk farm add` keeps")
-    else:
-        print(f"this Mac's CPU limit stays {limit:g}%, which {path} sets already")
-    return 0
+        # A file admission cannot read stops all its work on this Mac; one that cannot be written stops nothing.
+        stops = (f" Queuekeeper runs nothing on this Mac until that file is fixed, or removed to use the default of "
+                 f"{default:g}%." if isinstance(error, ValueError) else "")
+        return f"CPU limit: not set, since {path} cannot be read or written.{stops} Then run this script again.", error
+    if not wrote:
+        return (f"CPU limit: left at {limit:g}%, which busyLimit in {path} sets already. To change it, edit it "
+                f"there."), None
+    return (f"CPU limit: Queuekeeper now runs one build or test at a time on this Mac once its CPU is {limit:g}% busy, "
+            f"leaving room for your own work. A Mac you add later with `qk farm add` uses {default:g}%. To change it, "
+            f"set busyLimit in {path}."), None
 
 
 def limit_line():
@@ -126,24 +130,39 @@ def main(arguments):
         elif command.exists() or command.is_symlink():
             print(f"left {command}, which this script did not write")
         return 0
+    # Every line about the install is said once it is done, so that its first line says whether it worked.
     package.parent.mkdir(parents=True, exist_ok=True)
     package.write_text("".join(f"{path}\n" for path in source_paths(CHECKOUT)))
-    print(f"{sys.executable} now imports queuekeeper from {SOURCE} ({package})")
-    limited = limit_set()
+    imports = (f"Python package: {sys.executable} now imports the queuekeeper package from this checkout, for "
+               f"projects whose own scripts use it. {package} names the folders.")
+    limit, limit_error = limit_set()
     if (command.exists() or command.is_symlink()) and not ours(command):
-        print(f"queuekeeper: {command} is a command this script did not write, so it is left as it is: remove it, or "
-              f"name another folder with --bin", file=sys.stderr)
+        print(f"queuekeeper: installing failed: {command} is a command this script did not write, so it is left as it "
+              f"is, and `{COMMAND}` does not run this checkout.\nRemove it, or name another folder for `{COMMAND}` "
+              f"with --bin DIR, then run this script again.\n\nDone all the same:\n- {imports}\n- {limit}"
+              + (f"\n\nqueuekeeper: this Mac's CPU limit is not set: {limit_error}" if limit_error else ""),
+              file=sys.stderr)
         return 1
     folder.mkdir(parents=True, exist_ok=True)
     staged = command.with_name(f".{COMMAND}.{os.getpid()}.tmp")
     staged.write_text(wanted())
     staged.chmod(0o755)
     os.replace(staged, command)
-    print(f"`{COMMAND}` now runs this checkout ({command})")
+    runs = (f"`{COMMAND}` command: {command} now runs this checkout with {sys.executable}. Keep the checkout where it "
+            f"is, since `{COMMAND}` runs from it; `git pull --ff-only` in it updates Queuekeeper.")
+    next_step = (f"Next: run `{COMMAND} --help` to see its commands, then set up a project as \"Configure a project\" "
+                 f"in {CHECKOUT / 'doc/user_guide.md'} describes.")
     if not found:
-        print(f"{folder} is not on the PATH, so a shell does not find `{COMMAND}` yet: add this line to ~/.zshrc and "
-              f"open a new shell:\n    export PATH=\"{folder}:$PATH\"")
-    return limited
+        runs += f" {folder} is not on the PATH yet, so a shell does not find `{COMMAND}` by name."
+        next_step = (f"Next: add {folder} to the PATH by adding this line to ~/.zshrc, then open a new shell:\n"
+                     f"    export PATH=\"{folder}:$PATH\"\nThen " + next_step[len("Next: "):])
+    report = f"\nWhat this did:\n- {runs}\n- {imports}\n- {limit}\n\n{next_step}"
+    if limit_error:
+        print(f"queuekeeper: installed from {CHECKOUT}, but this Mac's CPU limit is not set: {limit_error}\n{report}",
+              file=sys.stderr)
+        return 1
+    print(f"Queuekeeper is installed from {CHECKOUT}.\n{report}")
+    return 0
 
 
 def usage():
