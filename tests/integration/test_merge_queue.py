@@ -9074,6 +9074,103 @@ class SharedCheckout(Fixture):
                 if name == "changed": self.assertEqual((self.repo / "AGENTS.md").read_text(), "a session's edit\n")
                 if name == "untracked": self.assertTrue((self.repo / "notes.txt").is_file())
 
+    def reported(self):
+        """What `qk queue status`, in words and as JSON, and `qk queue doctor` say of the shared checkout left behind."""
+        with contextlib.redirect_stdout(io.StringIO()) as words:
+            mq.status(self.repo)
+        with patch.object(mq, "memory_findings", return_value=([], [])), \
+                patch.object(mq, "launcher_hints", return_value=[]), \
+                contextlib.redirect_stdout(io.StringIO()) as doctored:
+            healthy = mq.doctor(self.repo, as_json=True)
+        return mq.snapshot(self.repo)["sharedCheckout"], words.getvalue(), json.loads(doctored.getvalue()), healthy
+
+    def test_a_checkout_left_behind_by_uncommitted_changes_is_reported_by_status_and_doctor(self):
+        """vocaro/queuekeeper#357: a hand edit in the shared checkout held it behind origin/main for two days, and only
+        worker.log said so. Status and doctor say how far behind it is, which paths hold it and what to do, and stop
+        once it follows."""
+        def edited():
+            (self.repo / "AGENTS.md").write_text("a session's edit\n")
+            (self.repo / "notes.txt").write_text("a session's file\n")
+        before, after, main, said = self.land(edited)
+        self.assertEqual(after, before)
+        record, words, doctored, healthy = self.reported()
+        self.assertEqual((record["cause"], record["behind"], record["landings"], record["changed"]),
+                         ("changes", 1, 1, 2))
+        self.assertEqual(record["paths"], ["AGENTS.md", "notes.txt"])
+        self.assertIn(f"the shared checkout {self.repo} is 1 commit behind origin/main, left as it is for ", words)
+        self.assertIn("over 1 landing: it has 2 uncommitted changed or untracked paths: AGENTS.md, notes.txt", words)
+        self.assertIn("  next: commit the changes on a branch in a worktree and land them through the queue, or "
+                      "restore them", words)
+        self.assertEqual(healthy, 1)
+        finding, = [found for found in doctored["findings"] if found["signal"] == "shared checkout behind"]
+        self.assertEqual((finding["behind"], finding["cause"], finding["paths"]),
+                         (1, "changes", ["AGENTS.md", "notes.txt"]))
+        self.assertIn("AGENTS.md, notes.txt", finding["diagnosis"])
+        self.assertIn(f"`git -C {self.repo} merge --ff-only origin/main`", finding["remedy"])
+        # Another landing leaves it behind again (land puts it at the origin/main before it), and the count of
+        # landings says so while the time it has been left keeps its start.
+        since = record["since"]
+        before, after, main, said = self.land(edited)
+        record, words, _, _ = self.reported()
+        self.assertEqual((record["behind"], record["landings"], record["since"]), (1, 2, since))
+        self.assertIn("over 2 landings", words)
+        # Further behind, the count of commits says so.
+        run(self.repo, "git", "reset", "-q", "--keep", "HEAD~1")
+        self.assertEqual(self.reported()[0]["behind"], 2)
+        self.assertIn("is 2 commits behind origin/main", self.reported()[1])
+        # The paths are read again: a person who restored them sees that only the next landing is missing.
+        run(self.repo, "git", "checkout", "-q", "--", "AGENTS.md")
+        (self.repo / "notes.txt").unlink()
+        record, words, _, _ = self.reported()
+        self.assertEqual(record["changed"], 0)
+        self.assertIn("the uncommitted changes that held it are gone", words)
+        # The positive control: once a landing fast-forwards it, neither status nor doctor says anything of it.
+        before, after, main, said = self.land()
+        self.assertEqual(after, main)
+        record, words, doctored, healthy = self.reported()
+        self.assertIsNone(record)
+        self.assertNotIn("shared checkout", words)
+        self.assertEqual([found for found in doctored["findings"] if found["signal"] == "shared checkout behind"], [])
+        self.assertFalse(mq.Queue(self.repo).left_file.exists())
+
+    def test_a_checkout_left_behind_and_moved_by_hand_is_no_longer_reported(self):
+        """The record is checked against the checkout: one fast-forwarded by hand, or not behind at all though changed,
+        is not reported."""
+        def edited(): (self.repo / "AGENTS.md").write_text("a session's edit\n")
+        self.land(edited)
+        self.assertEqual(self.reported()[0]["cause"], "changes")
+        run(self.repo, "git", "checkout", "-q", "--", "AGENTS.md")
+        run(self.repo, "git", "merge", "-q", "--ff-only", "origin/main")
+        record, words, doctored, _ = self.reported()
+        self.assertIsNone(record)
+        self.assertNotIn("shared checkout", words)
+        # Left as it is but at origin/main: changed, yet not behind, so nothing to report.
+        run(self.repo, "git", "checkout", "-q", "main")
+        (self.repo / "AGENTS.md").write_text("a session's edit\n")
+        worker = mq.Worker(mq.Queue(self.repo))
+        with contextlib.redirect_stdout(io.StringIO()):
+            worker.follow()
+        self.assertIn("changed or untracked", worker.left)
+        self.assertIsNone(mq.Queue(self.repo).left_record())
+
+    def test_a_checkout_left_for_a_run_from_it_is_a_note_not_a_finding(self):
+        """A checkout held only by a run from it follows by itself, so doctor notes it, as a run that holds it is
+        named (#159), and does not count it as a finding; status still says how far behind it is."""
+        def started(): self.runner = self.python(self.repo / "scripts")
+        before, after, main, said = self.land(started)
+        self.assertEqual(after, before)
+        record, words, doctored, _ = self.reported()
+        self.assertEqual((record["cause"], record["behind"]), ("running", 1))
+        self.assertIn(f"is 1 commit behind origin/main, left as it is for ", words)
+        self.assertIn(mq.IN_USE, words)
+        self.assertEqual([found for found in doctored["findings"] if found["signal"] == "shared checkout behind"], [])
+        self.assertTrue(any(mq.IN_USE in hint for hint in doctored["hints"]))
+        self.runner.kill()
+        self.runner.wait()
+        before, after, main, said = self.land()
+        self.assertEqual(after, main)
+        self.assertIsNone(self.reported()[0])
+
     def test_a_commit_made_in_the_shared_checkout_and_landed_does_not_hold_it_back(self):
         # A session commits in the shared checkout and lands from it; the queue lands the change under
         # another SHA, so the checkout's main is beside origin/main, not behind it (2026-11-06).

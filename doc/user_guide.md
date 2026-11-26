@@ -997,6 +997,22 @@ qk queue close --why "moving the queue's state" --for 2h && {  # refuse new entr
   maintenance half done. Maintenance on the queue's state or a Mac does not
   touch the checkout and need not wait.
 
+- **A shared checkout left behind is reported.** The worker moves the shared checkout only when
+  it is on `main`, clean and holds no commit of its own. When a landing leaves it behind
+  `origin/main` for any of these reasons, or for processes running from it, `qk queue status`
+  says how many commits behind it is, for how long, over how many landings, and why. For
+  uncommitted changes it names the paths and what to do:
+
+  ```text
+  the shared checkout /Users/me/Development/vocaro-engineering is 7 commits behind origin/main, left as it is for 2843m10s over 6 landings: it has 1 uncommitted changed or untracked path: policies/apple-engineering-private-terms.txt
+    next: commit the changes on a branch in a worktree and land them through the queue, or restore them (`git -C … restore -- PATH`, and delete untracked files); then the next landing fast-forwards it, and `git -C … merge --ff-only origin/main` does now
+  ```
+
+  `qk queue status --json` carries the same as `sharedCheckout`, with `cause`, `behind`,
+  `paths`, `words` and `next`. `qk queue doctor` reports it as a `shared checkout behind` finding
+  when a person must settle it, and as a note when it waits only for runs from it to end. Both
+  stop once the checkout reaches `origin/main`, whether a landing or a person moved it.
+
 - **A closure has a deadline.** It lasts an hour unless `--for DURATION` says otherwise, for
   example `--for 30m` or `--for 2h`. The longest allowed is 24 hours. When the deadline passes,
   the queue reopens by itself, so a session that crashes or forgets to reopen cannot block every

@@ -105,6 +105,7 @@ class HoldRecovery(unittest.TestCase):
         queue.working.return_value = False
         queue.held.return_value = why
         queue.closed.return_value = None
+        queue.left_behind.return_value = None
         with patch.object(mq, "Queue", return_value=queue):
             snapshot = mq.snapshot(Path("."))
         self.assertEqual(snapshot["schemaVersion"], 1)

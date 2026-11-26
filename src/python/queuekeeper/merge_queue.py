@@ -232,6 +232,15 @@ CATCHING_UP_WORDS = ("this waiting does not block maintenance: no entry waits or
 IN_USE = "a process started from it may still run its toolkit"
 UNKNOWN_USE = "whether a process started from it still runs is unknown"
 SHOWN_USERS = 5
+# The record of the shared checkout that follow last left behind origin/main, in queuekeeper-queue, which `qk queue
+# status` and `qk queue doctor` show until a follow moves it or it is found at origin/main (Queue.left_behind). From
+# 2026-11-23 to 2026-11-25 a hand edit held a shared checkout seven commits behind, and only worker.log said so
+# (vocaro/queuekeeper#357). How many of its changed or untracked paths they name.
+LEFT_FILE = "shared-checkout.json"
+SHOWN_PATHS = 3
+# The causes of a checkout left behind that follow itself settles once the runs from it end (left_next); any other is
+# a person's to settle.
+LEFT_BY_ITSELF = ("running", "unknown")
 # What a process that holds the shared checkout is, by its arguments, for checkout_holder: a queue worker started from it
 # (Queue.command) and the project it serves, the Apple plugin's build-tool wrapper and the tool, and a qk command.
 WORKER_OF = re.compile(r"'queue', 'run'.*?/src/python (\S+)")
@@ -1992,6 +2001,7 @@ class Queue:
         self.hold_file = self.directory / "hold"
         self.closed_file = self.directory / "closed.json"
         self.round_file = self.directory / ROUND_FILE
+        self.left_file = self.directory / LEFT_FILE
         self.round_lock = threading.Lock()  # between the threads of one worker, the only writer of round_file
         self.home = self.main_checkout.parent / QUEUES / self.main_checkout.name
         self.checkout = self.home / self.main_checkout.name
@@ -2118,6 +2128,43 @@ class Queue:
                 staged.write_text(json.dumps(state, indent=2) + "\n")
                 os.replace(staged, self.round_file)
             except OSError: pass
+
+    def left_record(self):
+        """The record of the shared checkout follow last left behind origin/main (LEFT_FILE), as written, or None."""
+        try: found = json.loads(self.left_file.read_text())
+        except (OSError, ValueError): return None
+        return found if isinstance(found, dict) else None
+
+    def note_left(self, record):
+        """Write the record of the shared checkout left behind, atomically, or with None remove it. A record that
+        cannot be written is left as it was: it explains the checkout, and never stops the worker."""
+        try:
+            if record is None:
+                self.left_file.unlink(missing_ok=True)
+                return
+            staged = self.left_file.with_suffix(f".{os.getpid()}.tmp")
+            staged.write_text(json.dumps(record, indent=2) + "\n")
+            os.replace(staged, self.left_file)
+        except OSError: pass
+
+    def left_behind(self):
+        """The record of the shared checkout left behind (left_record) as it stands now: None once its HEAD holds
+        origin/main, as after a fast-forward by hand; otherwise with how many commits behind it is and, when changes
+        held it, which paths are changed or untracked, read again, in words, and what a person does (left_next)."""
+        record = self.left_record()
+        if record is None: return None
+        checkout = record.get("checkout") or str(self.main_checkout)
+        try:
+            behind = int(text(checkout, "rev-list", "--count", f"HEAD..{MAIN}"))
+            if behind == 0: return None
+            record["behind"] = behind
+            if record.get("cause") == "changes":
+                listed = git(checkout, "status", "--porcelain", "--untracked-files=normal", check=True)
+                changed = [line[3:] for line in listed.stdout.splitlines()]
+                record.update(changed=len(changed), paths=changed[:SHOWN_PATHS])
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError): pass
+        record["words"], record["next"] = left_words(record), left_next(record)
+        return record
 
     def gate_note(self, role, **fields):
         """Set fields of the record of role's running gate, while it has one."""
@@ -3174,6 +3221,44 @@ def described_holders(users):
     return found + ([{"more": len(users) - SHOWN_USERS}] if len(users) > SHOWN_USERS else [])
 
 
+def left_words(record, at=None):
+    """The shared checkout follow left behind origin/main, by its record (Queue.left_behind), in words: where it is, how
+    many commits behind, for how long, over how many landings, and why: for uncommitted changes, which paths."""
+    behind = record.get("behind")
+    far = f"{behind} commit{'' if behind == 1 else 's'} behind origin/main" if isinstance(behind, int) else \
+        "behind origin/main by a count that could not be read"
+    since, landings = record.get("since"), record.get("landings") or 0
+    when = (f", left as it is for {ago(since, at)}" if isinstance(since, (int, float)) else "") + \
+        (f" over {landings} landing{'' if landings == 1 else 's'}" if landings else "")
+    if record.get("cause") == "changes":
+        paths, changed = record.get("paths") or [], record.get("changed") or 0
+        why = (f"it has {changed} uncommitted changed or untracked path{'' if changed == 1 else 's'}: "
+               + ", ".join(paths) + (f", and {changed - len(paths)} more" if changed > len(paths) else "")) \
+            if changed else "the uncommitted changes that held it are gone"
+    else: why = record.get("reason") or "for a reason not recorded"
+    return f"the shared checkout {record.get('checkout')} is {far}{when}: {why}"
+
+
+def left_next(record):
+    """What a person does about the shared checkout left behind, by its record's cause (left_words)."""
+    checkout, cause = record.get("checkout"), record.get("cause")
+    if cause == "changes" and not record.get("changed"):
+        return f"nothing: the next landing moves it, and `git -C {checkout} merge --ff-only origin/main` does now"
+    if cause == "changes":
+        return (f"commit the changes on a branch in a worktree and land them through the queue, or restore them "
+                f"(`git -C {checkout} restore -- PATH`, and delete untracked files); then the next landing "
+                f"fast-forwards it, and `git -C {checkout} merge --ff-only origin/main` does now")
+    if cause == "branch":
+        return (f"land its work through the queue and switch it back to main (`git -C {checkout} switch main`); the "
+                "next landing then fast-forwards it")
+    if cause == "commits":
+        return "land those commits through the queue from a branch; the next landing then moves it past them"
+    if cause in LEFT_BY_ITSELF:
+        return ("nothing: the worker tries again while nothing waits and at each landing, so it follows once those "
+                "runs end")
+    return "settle what the reason names; the next landing tries again"
+
+
 def snapshot(root, recent=5):
     """The queue's state as `qk queue status --json` prints it, which the visibility features read too:
     the worker, any hold, the round's account, the entries waiting, the last recent settled, the
@@ -3215,7 +3300,9 @@ def reading(root, recent=5):
              "ungated": [entry["id"] for entry in ungated],
              "idle": not waiting and (not working or bool((current or {}).get("catchingUp"))),
              # Apart from a hold: a closed queue works on what it has, and is idle once that is done (#32).
-             "closed": queue.closed()}
+             "closed": queue.closed(),
+             # The shared checkout follow left behind origin/main, and why, or None (vocaro/queuekeeper#357).
+             "sharedCheckout": queue.left_behind()}
     if waiting:
         found = landing_estimates(queue, root, current if working and not why else None, waiting)
         for entry in waiting: entry["landingEstimate"] = found.get(entry["id"]) or landing_estimate.unknown(
@@ -3288,6 +3375,9 @@ def status(root, as_json=False, recent=5, idle=False):
         print(f"{closed_words(state['closed'])}; entries already in it finish, {lapse_words(state['closed'])}, and "
               "`qk queue reopen` takes new ones sooner")
     if waiting and not working and not why: print("waiting with no worker: `qk queue resume` starts one")
+    if state["sharedCheckout"]:
+        print(state["sharedCheckout"]["words"])
+        print(f"  next: {state['sharedCheckout']['next']}")
     for line in round_lines(current or {}): print(line)
     for entry in ungated:
         print(f"ungated on main: {entry['id']} landed {entry['landedAs'][:12]} without the gate, which the next gate "
@@ -3503,7 +3593,10 @@ def doctor(root, as_json=False):
     """`qk queue doctor`: report queue, admission, and host findings. 0 when healthy, 1 when it finds anything. A
     repository with a signed launcher installed gets a note of the toolkit it starts the worker from."""
     findings, waiting, working = diagnose(root)
-    hints = admission_hints(root) + checkout_hints(root) if working else []
+    holding = checkout_hints(root) if working else []
+    hints = admission_hints(root) + holding if working else []
+    left, left_notes = left_findings(root, named=bool(holding))
+    findings, hints = findings + left, hints + left_notes
     hints += launcher_hints(root)
     held_back, wait_notes = idle_waits(root) if working else ([], [])
     quiet, quiet_notes = quiet_findings({lane_wait.host_of(finding["mac"]) for finding in held_back})
@@ -3582,6 +3675,20 @@ def checkout_hints(root, at=None):
     waited = f" {ago(since, at)}" if isinstance(since, (int, float)) else ""
     return [f"the worker has waited{waited} for {state['waiting']}; held by "
             + "; ".join(holder_line(holder, at) for holder in holders)]
+
+
+def left_findings(root, named=False):
+    """(findings, notes) for the shared checkout follow left behind origin/main (Queue.left_behind): a finding when a
+    person must settle it, as for uncommitted changes in it, naming how far behind it is, why and what to do; a note
+    when it follows by itself once the runs from it end, unless the worker's wait already names them (named,
+    checkout_hints). Nothing when it is not behind (vocaro/queuekeeper#357)."""
+    try: record = Queue(root).left_behind()
+    except Exception: return [], []  # noqa: BLE001 - a reading never fails the doctor
+    if not record: return [], []
+    if record.get("cause") in LEFT_BY_ITSELF: return [], [] if named else [record["words"]]
+    return [{"signal": "shared checkout behind", "diagnosis": record["words"], "remedy": record["next"],
+             "checkout": record.get("checkout"), "behind": record.get("behind"), "cause": record.get("cause"),
+             "paths": record.get("paths") or []}], []
 
 
 def idle_waits(root, at=None, busy=None, read=None):
@@ -4746,7 +4853,7 @@ class Worker:
         catch_up tries again; quiet, for those tries, says only a fast-forward."""
         shared = self.queue.main_checkout
         self.deferred = self.left = None
-        self.holders = []
+        self.holders, self.changed = [], []
         try:
             why = self.stays(shared)
             if why is None:
@@ -4765,6 +4872,7 @@ class Worker:
                     self.say(f"moved {shared} from {before[:12]} to {after}, past {dropped} commit(s) of its own "
                              "that origin/main already holds by their changes" if landed else
                              f"fast-forwarded {shared} from {before[:12]} to {after}")
+                    self.queue.note_left(None)
                     return
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
             why = str(error)
@@ -4772,13 +4880,35 @@ class Worker:
         if why and why.startswith((IN_USE, UNKNOWN_USE)): self.deferred = why
         if why and not quiet:
             self.say(f"left {shared} as it is: {why}" + ("; tried again once nothing waits" if self.deferred else ""))
+        self.record_left(shared, why, landing=not quiet)
+
+    def record_left(self, shared, why, landing):
+        """Record why follow left the shared checkout behind origin/main, for `qk queue status` and `qk queue doctor`
+        (Queue.left_behind): its cause, the reason in words, its changed paths, how many commits behind it is, since
+        when and over how many landings. A checkout found current, or not behind, has none (vocaro/queuekeeper#357)."""
+        try: behind = int(text(shared, "rev-list", "--count", f"HEAD..{MAIN}")) if why else 0
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError): behind = None
+        if behind == 0:
+            self.queue.note_left(None)
+            return
+        cause = ("changes" if self.changed else "running" if why.startswith(IN_USE)
+                 else "unknown" if why.startswith(UNKNOWN_USE) else "branch" if why.startswith("it is on ")
+                 else "commits" if why.startswith("its HEAD ") else "other")
+        before, now = self.queue.left_record() or {}, time.time()
+        self.queue.note_left({
+            "checkout": str(shared), "cause": cause, "reason": why, "behind": behind,
+            "changed": len(self.changed), "paths": self.changed[:SHOWN_PATHS],
+            "since": before["since"] if isinstance(before.get("since"), (int, float)) else now,
+            "landings": int(before.get("landings") or 0) + (1 if landing else 0), "updated": now})
 
     def stays(self, shared):
         """Why the shared checkout is not fast-forwarded now, '' when it is current, or None."""
         branch = git(shared, "symbolic-ref", "--short", "-q", "HEAD").stdout.strip()
         if branch != "main": return f"it is on {branch or 'a detached HEAD'}, not main"
         changed = git(shared, "status", "--porcelain", "--untracked-files=normal", check=True).stdout.splitlines()
-        if changed: return f"it has {len(changed)} changed or untracked path(s), such as {changed[0][3:]}"
+        if changed:
+            self.changed = [line[3:] for line in changed]
+            return f"it has {len(changed)} changed or untracked path(s), such as {changed[0][3:]}"
         head, target = text(shared, "rev-parse", "HEAD"), text(shared, "rev-parse", MAIN)
         if head == target: return ""
         if git(shared, "merge-base", "--is-ancestor", head, target).returncode and self.unlanded(shared, head):

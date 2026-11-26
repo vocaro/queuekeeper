@@ -374,8 +374,16 @@ HEAD moves, and the Apple plugin's `xcodebuild` and `swift` wrappers while their
 loaded all they run until it ends) do not count. A checkout left only for running processes is retried every 30 seconds
 while nothing waits, and `qk queue status` and `qk queue doctor` name up to five holders. A checkout
 left for any other reason is a person's to settle; a session never stashes, resets or edits it to
-make it follow. Nothing here holds the queue, and none of it keeps the queue from reading idle: while
-`Worker.catch_up` retries, the round's account marks `catchingUp`, and `reading` counts a live worker
+make it follow. Each time the follow leaves the checkout behind `origin/main`, for any reason,
+`Worker.record_left` writes `queuekeeper-queue/shared-checkout.json`: the cause (`changes`,
+`branch`, `commits`, `running`, `unknown` or `other`), the reason, up to three changed paths,
+how many commits behind, since when and over how many landings. A follow that moves the checkout,
+or finds it not behind, removes the record. `Queue.left_behind` reads the record for
+`qk queue status` (its `sharedCheckout` field) and `qk queue doctor`, counting the commits and the
+changed paths again and dropping a record whose checkout has since reached `origin/main`, as after
+a fast-forward by hand. Doctor reports a checkout a person must settle as a finding and one held
+only by running processes as a note (vocaro/queuekeeper#357). Nothing here holds the queue, and
+none of it keeps the queue from reading idle: while `Worker.catch_up` retries, the round's account marks `catchingUp`, and `reading` counts a live worker
 so marked as idle when no entry waits, since nothing is left to test or push and the holder can be
 another project's worker for as long as its gates take (vocaro/queuekeeper#285).
 
