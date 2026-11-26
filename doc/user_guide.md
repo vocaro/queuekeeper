@@ -1191,9 +1191,12 @@ without naming a test ends its summary with the last lines its command printed.
 
 ### Test counts
 
-Queuekeeper reads executed and skipped test counts from XCTest, Swift Testing, unittest, pytest
-and `qk unittest` output in the lane's own log. Skipped tests ran nothing and never count toward a
-floor. With no number in `queuekeeper.json`:
+Queuekeeper reads executed and skipped test counts from XCTest, Swift Testing, unittest, pytest,
+`cargo test` and `qk unittest` output in the lane's own log. Skipped tests ran nothing and never
+count toward a floor. For `cargo test`, each test binary's `test result:` line counts,
+documentation tests among them: its passed and failed tests are executed, its ignored tests are
+skipped, and tests a name filter left out count for neither. `cargo nextest` output is not read.
+With no number in `queuekeeper.json`:
 
 - **A run that reports a count must run at least one test.** One whose every test skipped fails.
   A lane whose log reports no count, such as a spelling check, is held to nothing.

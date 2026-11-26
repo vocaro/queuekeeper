@@ -218,6 +218,40 @@ class LaneResultTests(unittest.TestCase):
         self.assertEqual(lane_results.require_tests("Ran 40 tests in 1.0s\n\nOK (skipped=2)\n3 passed, 1 skipped in 0.1s\n",
                                                 expected=41), 41)
 
+    # cargo test --workspace's output (cargo 1.95.0, 2026-11-26) on two crates: alpha's unit tests, one of them
+    # ignored, and its one documentation test; beta's unit tests, an integration test binary, and documentation tests
+    # that run 0 tests.
+    CARGO_WORKSPACE = (Path(__file__).with_name("fixtures") / "cargo-test-workspace.log").read_text()
+
+    def test_a_cargo_test_run_counts_each_binarys_summary_line(self):
+        log = self.CARGO_WORKSPACE
+        self.assertIn("   Doc-tests beta\n\nrunning 0 tests\n", log)
+        self.assertEqual(log.count("test result: "), 5)
+        # 3 + 2 + 2 + 1 + 0 passed, and alpha's ignored test skipped.
+        self.assertEqual(lane_results.counted(log), (9, 1))
+        self.assertEqual((lane_results.executed_tests(log), lane_results.skipped_tests(log)), (8, 1))
+        self.assertEqual(lane_results.require_tests(log, 8, expected=8), 8)
+        result = "test result: {}. {} passed; {} failed; {} ignored; 0 measured; {} filtered out; finished in 0.01s\n"
+        cases = [(result.format("FAILED", 1, 2, 0, 0), 3, 0),
+                 # A name filter's unselected tests count for neither; -q prints the same line.
+                 (result.format("ok", 2, 0, 1, 14), 2, 1),
+                 # A cut-off run's binary with no finished-in time, indented by a wrapper that indents its steps.
+                 ("    test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n", 4, 0)]
+        for text, executed, skipped in cases:
+            with self.subTest(text):
+                self.assertEqual((lane_results.executed_tests(text), lane_results.skipped_tests(text)), (executed, skipped))
+        # A run whose every binary ran nothing reports a count, of none.
+        nothing = result.format("ok", 0, 0, 0, 0) * 3
+        self.assertEqual(lane_results.counted(nothing), (0, 0))
+        with self.assertRaisesRegex(ValueError, "observed 0"): lane_results.require_tests(nothing)
+        with self.assertRaisesRegex(ValueError, r"observed 0 \(2 skipped, which do not count\)"):
+            lane_results.require_tests(result.format("ok", 0, 0, 2, 0))
+        # A test's own name or a line that merely mentions a result is no count.
+        for text in ["test tests::result ... ok\n", "running 4 tests\n", "the test result: ok. 3 passed\n",
+                     "test result: ok. 3 passed; 0 failed\n"]:
+            with self.subTest(text):
+                self.assertIsNone(lane_results.counted(text))
+
     def test_what_a_test_prints_within_a_qk_unittest_process_is_no_other_suites_count(self):
         # What test_device_pass's fake runner printed into Queuekeeper's own gate log, 15 times, each counted as a
         # test beside the 2563 the runner counted (vocaro/queuekeeper#153), and other runners' lines a test may print.

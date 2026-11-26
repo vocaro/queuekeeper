@@ -655,8 +655,14 @@ class ConfigurationTests(unittest.TestCase):
                 return {"command": [sys.executable, "-c", f"print({output!r})"]}
             (Path(directory) / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Lanes", "lanes": {
                 "none": lane("Ran 0 tests"), "skipped": lane("Ran 2 tests\n\nOK (skipped=2)"),
-                "ran": lane("Ran 2 tests\n\nOK (skipped=1)"), "uncounted": lane("no misspellings")}}))
+                "ran": lane("Ran 2 tests\n\nOK (skipped=1)"), "uncounted": lane("no misspellings"),
+                # cargo test's line for each test binary (vocaro/queuekeeper#366).
+                "cargo": lane("test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out\n"
+                              "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out"),
+                "cargo-none": lane("test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out")}}))
             for name, status, said in [("none", 2, "Expected at least 1 executed tests; observed 0"),
+                                       ("cargo-none", 2, "Expected at least 1 executed tests; observed 0"),
+                                       ("cargo", 0, None),
                                        ("skipped", 2, "observed 0 (2 skipped, which do not count)"),
                                        ("ran", 0, None), ("uncounted", 0, None)]:
                 with self.subTest(name), patch.object(cli, "source_identity", return_value={}), \
@@ -666,6 +672,7 @@ class ConfigurationTests(unittest.TestCase):
                     if said: self.assertIn(said, recorded["error"])
                     # The receipt keeps the counts the log reports, which a later run is held to (count_history).
                     if name == "ran": self.assertEqual(recorded["tests"], {"executed": 1, "skipped": 1})
+                    if name == "cargo": self.assertEqual(recorded["tests"], {"executed": 3, "skipped": 1})
                     if name == "uncounted": self.assertNotIn("tests", recorded)
 
     def test_a_whole_run_that_executed_fewer_tests_than_its_last_pass_on_main_fails_without_a_minimum(self):
@@ -679,8 +686,13 @@ class ConfigurationTests(unittest.TestCase):
             git("init", "-q", "-b", "main")
             (root / ".gitignore").write_text(".build/\n")
             count = [sys.executable, "-c", "import pathlib; print('Ran', pathlib.Path('count.txt').read_text().strip(), 'tests')"]
+            # cargo test's line for each test binary: the count's tests in one, none in a documentation test's.
+            cargo = [sys.executable, "-c", "import pathlib; n = pathlib.Path('count.txt').read_text().strip(); "
+                     "line = 'test result: ok. {} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'; "
+                     "print(line.format(n)); print(line.format(0))"]
             (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Lanes", "lanes": {
-                "test": {"command": count}, "exact": {"command": count, "minimumTests": 4, "exactTests": True}}}))
+                "test": {"command": count}, "exact": {"command": count, "minimumTests": 4, "exactTests": True},
+                "cargo": {"command": cargo}}}))
             def landed(tests, message="state"):
                 (root / "count.txt").write_text(f"{tests}\n")
                 git("add", "-A")
@@ -694,7 +706,7 @@ class ConfigurationTests(unittest.TestCase):
                 return status, error.getvalue(), json.loads((root / ".build/queuekeeper" / lane / "source.json").read_text())
             first = landed(5)
             # The pass kept by commit, as keep_here keeps one where the toolkit has no working changes.
-            for lane in ("test", "exact"):
+            for lane in ("test", "exact", "cargo"):
                 (remote.store(root) / first).mkdir(parents=True, exist_ok=True)
                 (remote.store(root) / first / f"{lane}.json").write_text(json.dumps({
                     "ranOn": remote.HERE, "commit": first, "head": first, "lane": lane, "arguments": [],
@@ -708,6 +720,11 @@ class ConfigurationTests(unittest.TestCase):
             self.assertIn(words, said)
             self.assertIn("add the trailer `Tests-Removed: test` to a commit after", recorded["error"])
             self.assertEqual(recorded["tests"], {"executed": 4, "skipped": 0})
+            # cargo test's count is held to its last pass alike (vocaro/queuekeeper#366).
+            status, said, recorded = run("cargo")
+            self.assertEqual((status, recorded["outcome"], recorded["tests"]), (2, "failed", {"executed": 4, "skipped": 0}),
+                             said)
+            self.assertIn("cargo executed 4 tests, 1 fewer than the 5", said)
             # A run with arguments selects part of the lane, and is compared with no whole run.
             self.assertEqual(run("test", "--", "x")[0], 0)
             # A lane that says its count is exact is held to that count alone.

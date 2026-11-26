@@ -1,6 +1,6 @@
 """What a lane's run reports: its exit statuses, and the tests its log counts as run, skipped and unmeasured.
 
-It reads unittest, pytest, XCTest and Swift Testing logs."""
+It reads unittest, pytest, cargo test, XCTest and Swift Testing logs."""
 import re
 
 
@@ -48,6 +48,12 @@ PYTEST_SUMMARY = re.compile(r"^[ \t]*(?:=+ )?((?:" + PYTEST_ITEM + r")(?:, " + P
 # The tests that ran, and so count with their skips among them: not deselected ones, warnings, or
 # errors, which pytest counts apart from the tests (a fixture's, or a module's that collected none).
 PYTEST_RAN = ("failed", "passed", "skipped", "xfailed", "xpassed")
+# libtest's line for each test binary cargo test runs, documentation tests among them, one of which ran nothing
+# printing `0 passed; 0 failed` (cargo 1.95.0, November 2026): test result: ok. 3 passed; 0 failed; 1 ignored;
+# 0 measured; 0 filtered out; finished in 0.00s. An ignored test is a skip; a filtered-out one was not selected,
+# and a measured one is a benchmark cargo bench ran, so neither counts (vocaro/queuekeeper#366).
+CARGO_TEST_RESULT = re.compile(r"^[ \t]*test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; "
+                               r"\d+ measured; \d+ filtered out\b", re.M)
 # qk unittest's line over a process's output, `== NAME: OK (3 tests, 1.2s)`, and that output, up to the next
 # process's line or the run's summary (parallel.unittest_main). qk xctest's line names its skips before the seconds.
 UNITTEST_PROCESS = re.compile(r"^== \S[^\n]* \(\d+ tests, [\d.]+s\)\n.*?(?=^== |^queuekeeper unittest: )", re.M | re.S)
@@ -58,6 +64,13 @@ def pytest_counts(text):
     for match in PYTEST_SUMMARY.finditer(text):
         items = dict((word, int(n)) for n, word in re.findall(r"(\d+) (\w+)", match.group(1)))
         yield sum(items.get(word, 0) for word in PYTEST_RAN), items.get("skipped", 0)
+
+
+def cargo_test_counts(text):
+    """(ran, skipped) for each test binary whose libtest summary line the log holds."""
+    for match in CARGO_TEST_RESULT.finditer(text):
+        passed, failed, ignored = (int(n) for n in match.groups())
+        yield passed + failed + ignored, ignored
 
 
 def outside_unittest(text):
@@ -77,12 +90,13 @@ def unquoted(text, keep=False):
 def counted(text):
     """(ran, skipped) over the counts a log reports, or None when it reports no count.
 
-    Each XCTest bundle's top-level total, each Swift Testing run, each unittest run and each pytest
-    run. A wrapper's own "Executed N tests" line, one per simulator for example, counts only when
+    Each XCTest bundle's top-level total, each Swift Testing run, each unittest run, each pytest
+    run and each test binary cargo test runs. A wrapper's own "Executed N tests" line, one per simulator for example, counts only when
     the log holds no XCTest totals, which it would repeat. XCTest's, unittest's and Swift Testing's
     totals include their skips; XCTest and unittest name them apart, and Swift Testing gives each
     skipped or canceled test a line. A wrapper's line names its skips within its count or beside it
-    (EXECUTED). pytest names each outcome apart, its skips among them. Within a qk unittest
+    (EXECUTED). pytest names each outcome apart, its skips among them, and cargo test's libtest names its
+    ignored tests apart from those that passed or failed. Within a qk unittest
     process's output only unittest's own total counts (outside_unittest)."""
     whole = text
     text = outside_unittest(unquoted(SERIES_RUN_RECAP.sub("", text)))
@@ -99,6 +113,7 @@ def counted(text):
         skipped = re.search(r"\bskipped=(\d+)", match.group(2) or "")
         counts.append((int(match.group(1)), int(skipped.group(1)) if skipped else 0))
     counts.extend(pytest_counts(text))
+    counts.extend(cargo_test_counts(text))
     if not counts: return None
     return sum(ran for ran, _ in counts), sum(skipped for _, skipped in counts)
 
