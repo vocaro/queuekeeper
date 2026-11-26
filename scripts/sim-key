@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+"""Press keys on a booted iOS simulator's hardware keyboard: sim-key UDID KEY...
+
+One executable, so a project's qualification can run it with the UDID and the keys as its
+arguments. queuekeeper_apple.simulators.sim_key says what it does and what its exit codes mean.
+"""
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
+from queuekeeper.checkout import activate
+activate(Path(__file__).resolve().parents[1])
+from queuekeeper_apple.simulators.sim_key import main
+
+raise SystemExit(main())

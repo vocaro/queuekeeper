@@ -170,7 +170,7 @@ assert cli.main(["--version"]) == 0
 
     def test_native_resources_are_owned_and_included_by_their_distribution(self):
         native = ROOT / COMPONENTS["queuekeeper_apple"]["source"] / "queuekeeper_apple/_native"
-        self.assertEqual({path.name for path in native.iterdir()}, {"duo-pose-helper.c", "simulator-voices.swift"})
+        self.assertEqual({path.name for path in native.iterdir()}, {"duo-pose-helper.c", "sim-key-helper.m", "simulator-voices.swift"})
         self.assertFalse((ROOT / "src/objc/Simulator").exists())
         self.assertFalse((ROOT / "src/swift/Simulator").exists())
         metadata = tomllib.loads((native.parents[2] / "pyproject.toml").read_text())
