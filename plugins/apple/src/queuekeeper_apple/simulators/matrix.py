@@ -12,7 +12,8 @@ past the pruning rule's limits are pruned.
 With --app-accessibility each member's app processes get UIKit's and SwiftUI's own accessibility, for tests
 hosted in an app that read system views. With --voiceover each
 member's VoiceOver sound cues are switched off and its volume held at 0 before its tests, for a probe that
-switches VoiceOver on, and its volume is watched while they run. With --xcodegen SPEC
+switches VoiceOver on, and its volume is watched while they run; --voiceover-log also keeps VoiceOver's own log of
+each member, streamed from just after its boot until its tests end, beside its xcodebuild log. With --xcodegen SPEC
 the Xcode project is generated from SPEC before the build. Every device boots while the tests build, and is shut down and released however the run ends. The
 build is one `xcodebuild build-for-testing` for the first device's destination; each device
 then runs `xcodebuild test-without-building` on the same .xctestrun, with its own log, result
@@ -82,7 +83,7 @@ from queuekeeper import lane_report, lane_results, plugins, processes, resources
 from queuekeeper.parallel import RESULTS_VARIABLE, TAIL, combined, outcome
 from queuekeeper_mobile import shards
 from .. import stale_modules
-from . import pool as simulator_pool, speech
+from . import pool as simulator_pool, speech, voiceover_log
 from .pool import DEVICE_TYPE, RUNTIME, qualified
 
 # Seconds simctl boot itself may take; bootstatus has --boot-timeout.
@@ -178,6 +179,11 @@ def parse(argv, *, parser_factory=argparse.ArgumentParser):
                         "speech probe's: switch each member's VoiceOver sound cues off and hold its volume at 0 before "
                         "its tests, read it each second while they run, switch off a VoiceOver they left on, and print "
                         "their VOICEOVER_ lines; a member that could not be silenced, or was heard, fails")
+    parser.add_argument("--voiceover-log", nargs="?", const="full", choices=voiceover_log.KEEP, help="with "
+                        "--voiceover: stream each member's VoiceOver log (its vot and MauiAUSP processes, at debug "
+                        "level) from just after its boot until its tests end into KIND.voiceover.log in --logs, beside "
+                        "KIND.log; whole by default, about 7 MB a member for three minutes, or with `speech` only the "
+                        "entries of its speech requests (SEND req:, OutputRequest:, Action:)")
     parser.add_argument("--build-only", action="store_true", help="build the tests for the first device and "
                         "test nothing, so that a later run with the same options finds the build up to date; the "
                         "member is taken without erasing or booting it, only to name the build's destination")
@@ -220,6 +226,8 @@ def parse(argv, *, parser_factory=argparse.ArgumentParser):
     if args.xcodegen is not None and not args.xcode_project:
         parser.error("--xcodegen generates an Xcode project: name it with --xcode-project")
     if not all(args.forward_env): parser.error("--forward-env needs a prefix: an empty one would forward everything")
+    if args.voiceover_log and not args.voiceover:
+        parser.error("--voiceover-log keeps VoiceOver's log of a --voiceover run: give --voiceover too")
     if args.voiceover and (args.workers or args.shards or args.build_only):
         # A clone or a shard's member would speak unmuted; a build plays nothing.
         parser.error("--voiceover runs one test process on each member: not with --workers, --shards or --build-only")
@@ -710,8 +718,9 @@ class Run:
             lines += ["    " + line for line in log.read_text(errors="replace").splitlines()[-TAIL:]]
         self.say(*lines)
 
-    def boot(self, kind, device):
-        """None once the device has booted; otherwise its outcome is already reported."""
+    def boot(self, kind, device, vot=None):
+        """None once the device has booted; otherwise its outcome is already reported. vot, a
+        voiceover_log.Stream, starts as soon as the boot has ended, before anything else is done on the member."""
         log = self.logs / f"{kind}-boot.log"
         self.say(f"BOOT {kind} ({device.udid}), boot limit {BOOT_COMMAND}s, "
                  f"bootstatus limit {self.args.boot_timeout}s; log: {log}")
@@ -735,6 +744,13 @@ class Run:
             self.finish(kind, 1, f"the boot failed with status {status} in `{command}`", log)
             return False
         self.say(f"BOOTED {kind} ({device.udid}) in {round(time.monotonic() - started)}s")
+        if vot is not None:
+            try: vot.start()
+            except OSError as error:
+                # The run was asked for VoiceOver's own record of what it said, and would have none.
+                self.finish(kind, 1, f"VoiceOver's log could not be streamed ({error}), so no test ran", log)
+                return False
+            self.say(f"VOICEOVER LOG {kind}: streaming into {vot.path}")
         why = simulator_pool.set_app_accessibility(simulator_pool.simctl, device.udid, self.args.app_accessibility,
                                                    kept=device.kept)
         if why is not None and self.args.app_accessibility:
@@ -1083,12 +1099,31 @@ class Run:
         shards.keep_timings(self.logs / SHARD_TIMINGS, self.seconds)
 
     def device(self, kind, device, built):
-        if not self.boot(kind, device): return
-        xctestrun = built.result()
-        if xctestrun is None:
-            return self.finish(kind, 1, "not tested: the build failed")
-        with self.heard(kind, device) if self.args.voiceover else contextlib.nullcontext():
-            self.test(kind, device, xctestrun)
+        # A file of that name is this run's alone: one an earlier run left would pass for this run's.
+        path = voiceover_log.path(self.logs, kind)
+        path.unlink(missing_ok=True)
+        stream = voiceover_log.Stream(device.udid, path, self.args.voiceover_log) \
+            if getattr(self.args, "voiceover_log", None) else None
+        try:
+            if not self.boot(kind, device, stream): return
+            xctestrun = built.result()
+            if xctestrun is None:
+                return self.finish(kind, 1, "not tested: the build failed")
+            with self.heard(kind, device) if self.args.voiceover else contextlib.nullcontext():
+                self.test(kind, device, xctestrun)
+        finally:
+            if stream is not None: self.stream_ended(kind, stream)
+
+    def stream_ended(self, kind, stream):
+        """End a member's VoiceOver log however its run ended, before the member goes back, and say what it kept.
+        A stream that would not end fails the member: no process the run started is to outlive it."""
+        try:
+            kept = stream.stop()
+        except (RuntimeError, OSError) as error:
+            self.say(f"VOICEOVER LOG {kind}: {error}")
+            if kind in self.results: self.finish(kind, 1, f"VoiceOver's log stream did not end: {error}")
+            return
+        if kept is not None: self.say(f"VOICEOVER LOG {kind}: {kept}")
 
 
 def bundle_json(bundle, what, *options, timeout=300):

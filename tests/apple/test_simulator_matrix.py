@@ -119,6 +119,25 @@ XCRUN = textwrap.dedent("""\
     elif action == "erase":
         if device(rest[0])["state"] != "Shutdown": sys.exit("Unable to erase contents and settings in current state")
         if "defaults" in device(rest[0]): change(rest[0], defaults={})
+    elif action == "spawn" and rest[1] == "log":
+        # VoiceOver's log stream: a speech request among other entries, then nothing until it is stopped, when it
+        # says so in simctl.log.
+        import signal, time
+        (state / f"stream-{rest[0]}.pid").write_text(str(os.getpid()))
+        def ended(number, frame):
+            with (state / "simctl.log").open("a") as log: log.write(f"stream ended {rest[0]} {signal.Signals(number).name}\\n")
+            sys.exit(0)
+        signal.signal(signal.SIGTERM, ended)
+        signal.signal(signal.SIGINT, ended)
+        print('Filtering the log data using "process == \\"vot\\" OR process == \\"MauiAUSP\\""')
+        print("Timestamp               Ty Process[PID:TID]")
+        print("2026-11-26 10:00:00.000 Db vot[41:1a2] [com.apple.VoiceOverTouch:Speech] SEND req:0x1 OutputRequest: <0x1>")
+        print("    Action: 'One Button'")
+        print("2026-11-26 10:00:00.001 Db MauiAUSP[42:1b] rendered 512 frames")
+        print("2026-11-26 10:00:00.002 Db vot[41:1a2] [com.apple.VoiceOverTouch:Speech] Action: 'Button'")
+        sys.stdout.flush()
+        while os.getppid() != 1: time.sleep(0.05)
+        sys.exit("the stream was left behind by its run")
     elif action == "spawn" and rest[1] == "defaults":
         # A setting in the simulator's preferences, which an erase clears; a kind in FAKE_DEFAULTS_IGNORED
         # takes the write and still reads unset.
@@ -1076,6 +1095,100 @@ class SimulatorMatrixTests(unittest.TestCase):
                 status, output = self.run_matrix("--voiceover", *option)
                 self.assertEqual(status, 2, output)
                 self.assertIn("--voiceover runs one test process on each member", output)
+
+    def assert_streams_ended(self, *udids):
+        """Each member's VoiceOver log stream started after its boot and ended on the run's SIGINT before the member
+        was shut down, and no stream process is left."""
+        simctl = (self.state / "simctl.log").read_text().splitlines()
+        for udid in udids:
+            started = simctl.index(f"spawn {udid} log stream --level debug --style compact --predicate "
+                                   'process == "vot" OR process == "MauiAUSP"')
+            self.assertLess(simctl.index(f"bootstatus {udid} -b"), started)
+            self.assertLess(started, simctl.index(f"stream ended {udid} SIGINT"))
+            self.assertLess(simctl.index(f"stream ended {udid} SIGINT"), simctl.index(f"shutdown {udid}"))
+            pid = int((self.state / f"stream-{udid}.pid").read_text())
+            with self.assertRaises(ProcessLookupError, msg=f"the stream {pid} outlived its run"): os.kill(pid, 0)
+
+    def test_voiceover_log_keeps_each_members_stream_beside_its_log_and_ends_it(self):
+        iphone = self.add("Project iPhone 17 Pro 1")
+        ipad = self.add("Project iPad Air 13-inch (M4) 1", IPAD)
+        logs = self.root / ".build/simulator-tests/logs"
+        # One an earlier run left is not passed off as this run's.
+        logs.mkdir(parents=True)
+        (logs / "iPad-Air-13-inch-M4.voiceover.log").write_text("an earlier run's\n")
+        status, output = self.run_matrix("--voiceover", "--voiceover-log", FAKE_VOICEOVER="1",
+                                         FAKE_TEST_FAIL="iPad-Air-13-inch-M4")
+        self.assertEqual(status, 1, output)
+        self.assert_streams_ended(iphone, ipad)
+        for kind in ("iPhone-17-Pro", "iPad-Air-13-inch-M4"):
+            kept = logs / f"{kind}.voiceover.log"
+            text = kept.read_text()
+            self.assertIn("SEND req:0x1 OutputRequest:", text)
+            self.assertIn("MauiAUSP[42:1b] rendered 512 frames", text)
+            self.assertNotIn("an earlier run's", text)
+            self.assertIn(f"VOICEOVER LOG {kind}: streaming into {kept}", output)
+            self.assertIn(f"VOICEOVER LOG {kind}: 6 lines in {kept}", output)
+            self.assertLess(output.index(f"MUTED {kind}"), output.index(f"TEST {kind}"))
+        # A failed member's stream ends as a passed one's does.
+        self.assertIn("FAIL iPad-Air-13-inch-M4: the tests failed", output)
+        self.assertIn("PASS iPhone-17-Pro: Executed 3 tests", output)
+        self.assert_every_device_returned()
+
+    def test_voiceover_log_speech_keeps_only_the_speech_requests(self):
+        iphone = self.add("Project iPhone 17 Pro 1")
+        status, output = self.run_series("--voiceover", "--voiceover-log", "speech")
+        self.assertEqual(status, 0, output)
+        self.assert_streams_ended(iphone)
+        kept = self.root / ".build/simulator-tests/logs/iPhone-17-Pro.voiceover.log"
+        self.assertEqual(kept.read_text().splitlines(), [
+            'Filtering the log data using "process == "vot" OR process == "MauiAUSP""',
+            "Timestamp               Ty Process[PID:TID]",
+            "2026-11-26 10:00:00.000 Db vot[41:1a2] [com.apple.VoiceOverTouch:Speech] SEND req:0x1 OutputRequest: <0x1>",
+            "    Action: 'One Button'",
+            "2026-11-26 10:00:00.002 Db vot[41:1a2] [com.apple.VoiceOverTouch:Speech] Action: 'Button'"])
+        self.assertIn(f"VOICEOVER LOG iPhone-17-Pro: 5 of 6 lines, those of its speech requests, in {kept}", output)
+
+    def test_voiceover_log_is_kept_for_each_run_of_a_series(self):
+        iphone = self.add("Project iPhone 17 Pro 1")
+        status, output = self.run_series("--voiceover", "--voiceover-log", "--repeat", "2")
+        self.assertEqual(status, 0, output)
+        for run in (1, 2):
+            self.assertIn("SEND req:", (self.root / f".build/simulator-tests/logs/iPhone-17-Pro-run{run}.voiceover.log")
+                          .read_text())
+        simctl = (self.state / "simctl.log").read_text().splitlines()
+        self.assertEqual(simctl.count(f"stream ended {iphone} SIGINT"), 2, simctl)
+
+    def test_voiceover_log_needs_voiceover(self):
+        status, output = self.run_matrix("--voiceover-log")
+        self.assertEqual(status, 2, output)
+        self.assertIn("--voiceover-log keeps VoiceOver's log of a --voiceover run: give --voiceover too", output)
+        self.assertFalse((self.state / "simctl.log").exists(), "nothing was taken or streamed")
+
+    def test_a_stop_ends_each_members_voiceover_log_stream(self):
+        iphone = self.add("Project iPhone 17 Pro 1")
+        ipad = self.add("Project iPad Air 13-inch (M4) 1", IPAD)
+        command = [sys.executable, str(ENG), "simulator-tests", "--unadmitted", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
+                   "--device", "iPhone-17-Pro", "--device", "iPad-Air-13-inch-M4", "--pool", "Project",
+                   "--voiceover", "--voiceover-log"]
+        # Three devices never meet, so both runs test until the stop.
+        process = subprocess.Popen(command, cwd=self.root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                   env={**self.environment, "FAKE_MEET": "3", "FAKE_MEET_LIMIT": str(stretched(600))},
+                                   preexec_fn=host_isolation.default_signals)
+        self.addCleanup(lambda: process.poll() is None and process.kill())
+        followed = Followed(process)
+        testing = lambda: len(list(self.state.glob("testing-*")))
+        reported = lambda: any(line is not None and line.startswith(("PASS ", "FAIL ", "UNMEASURED ", "NOT RUN "))
+                               for line in list(followed.lines))
+        waiting.wait_until(lambda: testing() >= 2 or process.poll() is not None or reported(),
+                           progress=waiting.combined(waiting.files(self.state), lambda: len(followed.lines),
+                                                     waiting.cpu(self.root / "bin", exclude=["test-without-building"])))
+        self.assertEqual(testing(), 2, f"the devices never started testing: {followed.text()}")
+        process.send_signal(signal.SIGTERM)
+        output = followed.communicate(timeout=stretched(60))
+        self.assertEqual(process.returncode, -signal.SIGTERM, output)
+        self.assert_streams_ended(iphone, ipad)
+        self.assertIn("VOICEOVER LOG iPhone-17-Pro: 6 lines in", output)
+        self.assert_every_device_returned()
 
     def test_xcodegen_generates_the_project_before_the_build_and_its_failure_fails_the_build(self):
         status, output = self.run_matrix("--xcode-project", "Hosted/Host.xcodeproj", "--xcodegen", "Hosted/project.yml",

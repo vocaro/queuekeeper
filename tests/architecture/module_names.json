@@ -90,6 +90,7 @@
     "queuekeeper_apple.simulators.sim_key",
     "queuekeeper_apple.simulators.speech",
     "queuekeeper_apple.simulators.template",
+    "queuekeeper_apple.simulators.voiceover_log",
     "queuekeeper_apple.sources",
     "queuekeeper_apple.stale_modules",
     "queuekeeper_apple.stale_packages",

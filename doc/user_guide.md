@@ -3130,6 +3130,26 @@ as an accessibility snapshot of system views, asks for it with `--app-accessibil
 `qk simulator-tests` or `qk simulator-pool take`. Queuekeeper sets it after each boot and fails the
 device if it does not read back. It does nothing for a hostless test bundle.
 
+**VoiceOver.** Tests that switch VoiceOver on, such as a speech probe's, run with `--voiceover` on
+`qk simulator-tests`. Each member's VoiceOver sound cues are switched off and its volume held at 0
+before its tests, its volume is watched while they run, a VoiceOver they left on is switched off, and
+their `VOICEOVER_` lines are printed. A member that could not be silenced, or was heard, fails.
+`--voiceover` runs one test process on each member, so it does not combine with `--workers`, `--shards`
+or `--build-only`.
+
+`--voiceover-log`, given with `--voiceover`, also keeps VoiceOver's own log of each member.
+XCTest's `currentSpeech()` gives only the latest utterance, and VoiceOver's `vot` process logs every
+speech request at debug level. That log reads only while the member is booted. So the runner streams
+`xcrun simctl spawn UDID log stream --level debug --style compact` for the `vot` and `MauiAUSP`
+processes from just after the member's boot until its tests end, and writes it to
+`KIND.voiceover.log` in `--logs`, beside `KIND.log` (in a series, `KIND-runN.voiceover.log`). It
+streams only members the run holds, and it ends each stream before the member goes back, however the
+run ends; a stream that would not end fails the member. The whole stream is kept by default, about
+7 MB a member for three minutes. Since the logs folder is overwritten by the next run, that size does
+not build up. `--voiceover-log speech` keeps only the entries of speech requests, those with `SEND req:`,
+`OutputRequest:`, `Action:` or the speech extension's `Processing markup for voice locale`, each with
+its continuation lines, and the stream's first lines.
+
 **Cleanup.** `qk simulator-pool reap [--dry-run] [--here]` shuts down a member or template left booted
 for two hours that nothing accounts for; it also runs before work goes to another Mac and in
 `qk doctor`. It also releases a reservation whose process is gone, by PID and start, and whose release
