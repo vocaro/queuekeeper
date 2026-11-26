@@ -2677,16 +2677,29 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     base = text(root, "merge-base", tip, MAIN) if present else None
     commits = text(root, "rev-list", "--reverse", f"{base}..{tip}" if present else tip).split()
     merges = text(root, "rev-list", "--merges", f"{base}..{tip}").split() if present else []
-    if merges:
-        # A branch refreshed by merging main, as the app's sync does, lands as its own commits replayed (#217).
+    # Commits that already landed, as a branch kept after its landing and given another commit holds, which replayed
+    # can conflict with their own landed copies (#352).
+    landed = already_landed(root, tip) if present else []
+    replays = None
+    if merges or landed:
+        # A branch refreshed by merging main, as the app's sync does, lands as its own commits replayed (#217), less
+        # those origin/main holds as equal patches, which a rebase leaves out too (#352).
         replayed = linear(queue, root, tip)
         if replayed is None:
-            raise ValueError(merge_refusal(root, merges, tip))
+            if merges: raise ValueError(merge_refusal(root, merges, tip))
+            raise landed_refusal(tip, landed, commits, reference)
         if replayed == text(root, "rev-parse", MAIN):
-            print(f"origin/main already holds the commits of {tip[:12]} but its merges: nothing to queue")
+            print(f"origin/main already holds the commits of {tip[:12]}"
+                  f"{' but its merges' if merges else ' as equal patches'}: nothing to queue")
             return None
-        print(f"queue: dropped {', '.join(merge[:12] for merge in merges)}, "
-              f"{'merges' if len(merges) > 1 else 'a merge'} of origin/main, and queued the branch's own commits "
+        dropped = []
+        if merges:
+            dropped.append(f"{', '.join(merge[:12] for merge in merges)}, "
+                           f"{'merges' if len(merges) > 1 else 'a merge'} of origin/main")
+        if landed:
+            dropped.append(f"{', '.join(commit[:12] for commit in landed)}, "
+                           f"{'commits' if len(landed) > 1 else 'a commit'} origin/main already holds as an equal patch")
+        print(f"queue: dropped {'; and '.join(dropped)}, and queued the branch's own commits "
               f"replayed onto origin/main as {replayed[:12]}; the branch is left as it is", file=sys.stderr)
         replays, tip = tip, replayed
         base = text(root, "merge-base", tip, MAIN)
@@ -2742,7 +2755,7 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     message = text(root, "log", "-z", "--format=%B", f"{base}..{tip}" if present else tip)
     entry = {"id": None, "tip": tip, "base": base, "commits": commits, "branch": branch or None, "note": note,
              "subject": subject, "state": QUEUED, "directory": str(root), **resources.coding_agent(),
-             **({"replays": replays} if merges else {}), **flags}
+             **({"replays": replays} if replays else {}), **flags}
     if alone: entry["reservedPaths"] = sorted(changed)
     # Fingerprinting is advisory. A missing patch ID must never stop a submission or its eventual settlement.
     with contextlib.suppress(OSError, subprocess.SubprocessError, UnicodeError):
@@ -9356,10 +9369,11 @@ def linear(queue, root, tip):
     """The commit that tip's own commits, replayed in order onto origin/main, make, or None when they cannot be:
     a merge in origin/main..tip brings in work of its own (landing_proofs.own_merges), as a merge of another branch does, or a
     commit conflicts. The merges are refreshes of the branch from main, as the desktop app's sync makes, which a
-    queue must not put on main; the branch and its worktree are left as they are, and a commit main already has
-    is passed over, as a round's pick does (vocaro-engineering#217)."""
+    queue must not put on main; the branch and its worktree are left as they are. A commit origin/main holds as an
+    equal patch is left out before the replay, as `git rebase` leaves it out (already_landed, vocaro/queuekeeper#352),
+    and one whose replay comes out empty is passed over, as a round's pick does (vocaro-engineering#217)."""
     if landing_proofs.own_merges(lambda *words: git(root, *words), MAIN, tip) != []: return None
-    own = text(root, "rev-list", "--reverse", "--no-merges", f"{MAIN}..{tip}").split()
+    own = text(root, "rev-list", "--reverse", "--no-merges", "--cherry-pick", "--right-only", f"{MAIN}...{tip}").split()
     with scratch(queue, text(root, "rev-parse", MAIN), "linear") as path:
         for commit in own:
             if git(path, "cherry-pick", commit, hooks=False).returncode == 0: continue
@@ -9368,6 +9382,36 @@ def linear(queue, root, tip):
                 return None
             git(path, "cherry-pick", "--skip", hooks=False, check=True)
         return text(path, "rev-parse", "HEAD")
+
+
+def already_landed(root, tip):
+    """The commits of tip that origin/main lacks by ID but holds as an equal patch, oldest first: what `git rebase` and
+    `git log --cherry-pick --right-only origin/main...TIP` leave out. A branch kept after its landing holds them, as the
+    queue's replay gave its commits new IDs, and replayed again one can conflict with a later landed commit's change to
+    the same lines, though it is already on main (vocaro/queuekeeper#352). A commit the queue landed by settling a
+    conflict has another patch, so it is not among them, and is refused as a conflict as before. Merges are left out."""
+    own = text(root, "rev-list", "--reverse", "--no-merges", f"{MAIN}..{tip}").split()
+    if not own: return []
+    kept = set(text(root, "rev-list", "--no-merges", "--cherry-pick", "--right-only", f"{MAIN}...{tip}").split())
+    return [commit for commit in own if commit not in kept]
+
+
+def landed_refusal(tip, landed, commits, reference):
+    """Why qk land queues nothing for a branch holding commits origin/main already has as equal patches (landed) whose
+    other commits, replayed onto origin/main without them, conflict: the rebase that moves those commits alone, so that
+    the conflict left to settle is the branch's own (vocaro/queuekeeper#352). When the landed commits are the branch's
+    oldest, as for a branch kept after its landing, `--onto` names the newest of them; otherwise a plain rebase, which
+    leaves them out wherever they are."""
+    named = [] if reference == "HEAD" else [reference]
+    command = (["git", "rebase", "--onto", "origin/main", landed[-1], *named] if commits[:len(landed)] == landed
+               else ["git", "rebase", "origin/main", *named])
+    many = len(landed) > 1
+    words = (f"{tip[:12]} is not queued: {', '.join(commit[:12] for commit in landed)} "
+             f"{'are commits' if many else 'is a commit'} origin/main already holds as an equal patch under another ID, "
+             f"which the queue leaves out, and the branch's other commits, replayed onto origin/main without "
+             f"{'them' if many else 'it'}, conflict with it. Move them alone onto origin/main with "
+             f"`{shlex.join(command)}`, settle the conflict, and land it again")
+    return Refused(words, recovery=recovery.advice("already-landed", "session", True, "rebase", words, [command]))
 
 
 # How many commits a refused merge's message lists; the rest it only counts.

@@ -345,6 +345,14 @@ A refusal is one line, `COMMIT is not queued: REASON`, with exit status 1. A che
 made queues the entry anyway and says so; the round checks again. A branch refreshed by merging
 `main` is not refused; the queue lands its own commits.
 
+A branch that holds commits `main` already has as equal patches under other IDs, such as a branch
+kept after its landing and given one more commit, is not refused either. `qk land` leaves those
+commits out, as `git rebase` would, replays the rest onto `origin/main`, and says which it dropped.
+A commit that landed only after the queue settled a conflict has another patch, so it stays in and
+can still conflict. When the remaining commits conflict with `origin/main`, the refusal names the
+landed commits and gives `git rebase --onto origin/main LANDED BRANCH`, where LANDED is the newest
+of them, so that only your own conflict is left to settle.
+
 ### Add-only JSON objects
 
 A project can let the queue combine independent key additions to a JSON object. Set
@@ -3568,6 +3576,11 @@ wake you.
   `retryable: true` and the suggested `git rebase --onto origin/main COPY BRANCH`. Run it,
   cherry-pick any of your commits the refusal lists, then land again
   ([Checks before queuing](#checks-before-queuing)).
+- **A branch holding commits that already landed**, whose other commits conflict with
+  `origin/main`, is refused with exit 1. `--json` gives `reasonCode: "already-landed"`,
+  `responsibleParty: "session"`, `action: "rebase"`, `retryable: true` and the suggested
+  `git rebase --onto origin/main LANDED BRANCH`. Run it, settle the conflict, then land again.
+  Without a conflict, `qk land` leaves the landed commits out by itself.
 - **A landing deletes its branch** when it can prove the branch landed, and says
   `queue: deleted branch NAME at TIP: ...; restore with git branch NAME TIP`, or
   `queue: kept branch NAME: WHY`. The usual reason to keep it is that your worktree has it

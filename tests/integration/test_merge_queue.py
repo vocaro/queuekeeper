@@ -572,6 +572,82 @@ class Landing(Fixture):
         self.assertNotIn("cherry-pick", said)
         self.assertIsNone(mq.landing_proofs.contained(lambda *words: mq.git(self.repo, *words), "origin/main", tip))
 
+    def kept_after_landing(self, branch):
+        """branch with two commits to one file, A then B rewriting A's lines, landed through the queue onto a main
+        that moved meanwhile, so that they land under new IDs, and kept as a worktree keeps it. Returns (A, B)."""
+        first = self.commit("notes", branch, "a")
+        second = self.commit("notes", branch, "b", start=branch)
+        self.commit("elsewhere", "main-work", start="origin/main")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        run(self.repo, "git", "checkout", "-q", branch)
+        with patch.object(mq.Queue, "start"), patch("builtins.print"):
+            identifier = mq.add(self.repo, branch)
+        self.assertEqual(self.work(), 0)
+        self.assertEqual(run(self.repo, "git", "rev-parse", branch), second)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        run(self.repo, "git", "fetch", "-q", "origin")
+        self.assertNotEqual(run(self.repo, "git", "merge-base", "origin/main", branch), second)
+        return first, second
+
+    def test_a_kept_branch_landed_again_queues_only_its_new_commit(self):
+        """A branch kept after its landing holds its landed commits under their old IDs. Landed again with a new
+        commit, those are left out as equal patches, as a rebase leaves them out, though A replayed would conflict
+        with B's landed copy; the new commit alone lands (#352)."""
+        first, second = self.kept_after_landing("kept")
+        third = self.commit("more", "kept", start="kept")
+        with patch.object(mq.Queue, "start"), patch("builtins.print") as said:
+            identifier = mq.add(self.repo, "kept")
+        lines = " ".join(" ".join(map(str, call.args)) for call in said.call_args_list)
+        self.assertIn(f"dropped {first[:12]}, {second[:12]}, commits origin/main already holds as an equal patch", lines)
+        entry = self.state(identifier)
+        self.assertEqual((entry["replays"], entry["branch"], len(entry["commits"])), (third, "kept", 1))
+        self.assertEqual(run(self.repo, "git", "rev-parse", "kept"), third)
+        self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(run(self.repo, "git", "log", "--format=%s", "-4", "origin/main").splitlines(),
+                         ["Add more", "Add notes", "Add notes", "Add elsewhere"])
+        self.assertEqual(run(self.repo, "git", "show", "origin/main:notes"), "b")
+
+    def test_a_kept_branch_with_nothing_new_has_nothing_to_queue(self):
+        self.kept_after_landing("kept")
+        with patch.object(mq.Queue, "start"), patch("builtins.print") as said:
+            self.assertIsNone(mq.add(self.repo, "kept"))
+        self.assertEqual([entry["state"] for entry in mq.Queue(self.repo).all()], ["landed"])
+        self.assertIn("as equal patches: nothing to queue", " ".join(map(str, said.call_args.args)))
+
+    def test_a_kept_branch_whose_new_commit_conflicts_is_told_the_rebase_that_leaves_out_what_landed(self):
+        """A negative control: the new commit conflicts with origin/main itself, so nothing is queued, and the
+        refusal names the landed commits and the rebase that moves the new one alone."""
+        first, second = self.kept_after_landing("kept")
+        self.commit("more", "main-again", "main", start="origin/main")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.commit("more", "kept", "branch", start="kept")
+        with self.assertRaises(mq.Refused) as caught, patch("builtins.print"):
+            mq.add(self.repo, "kept")
+        self.assertEqual([entry["state"] for entry in mq.Queue(self.repo).all()], ["landed"])
+        command = ["git", "rebase", "--onto", "origin/main", second, "kept"]
+        words = str(caught.exception)
+        self.assertIn(f"{first[:12]}, {second[:12]} are commits origin/main already holds as an equal patch", words)
+        self.assertIn(f"`{shlex.join(command)}`", words)
+        advice = caught.exception.recovery
+        self.assertEqual((advice["reasonCode"], advice["action"], advice["retryable"], advice["suggestedCommands"]),
+                         ("already-landed", "rebase", True, [command]))
+
+    def test_a_commit_landed_by_settling_a_conflict_is_still_refused(self):
+        """A negative control: a commit main holds only with its conflict settled has another patch, so it is not
+        left out, and replayed it conflicts with origin/main as before."""
+        start = run(self.repo, "git", "rev-parse", "origin/main")
+        self.commit("same", "main-work", "main")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        mine = self.commit("same", "b", "branch", start=start)
+        self.commit("same", "settled", "both", start="origin/main")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.assertEqual(mq.already_landed(self.repo, mine), [])
+        self.commit("more", "b", start="b")
+        with self.assertRaises(mq.Refused) as caught, patch("builtins.print"):
+            mq.add(self.repo, "b")
+        self.assertIn(f"{mine[:12]} conflicts with origin/main, in same", str(caught.exception))
+
     def test_adding_a_branch_again_replaces_it(self):
         self.commit("a", "a")
         [first] = self.add("a")
@@ -8078,7 +8154,13 @@ class Changelogs(Fixture):
         (self.repo / "CHANGELOG.md").write_text(self.top("- a"))
         run(self.repo, "git", "add", "CHANGELOG.md")
         run(self.repo, "git", "commit", "-qm", "Add a again")
-        self.add("again")
+        # qk land leaves out a commit main holds as an equal patch, as a rebase does (#352), so nothing is queued.
+        with patch.object(mq.Queue, "start"), patch("builtins.print"):
+            self.assertIsNone(mq.add(self.repo, "again"))
+        self.assertEqual([entry["state"] for entry in mq.Queue(self.repo).all()], ["landed"] * 2)
+        # The round does not double it either, as when main gains its copy after it is queued.
+        with patch.object(mq, "already_landed", return_value=[]):
+            self.add("again")
         self.work()
         self.assertEqual(self.changelog().count("- a\n"), 1)
 

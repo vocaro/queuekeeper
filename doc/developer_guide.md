@@ -269,6 +269,18 @@ so the rebase moves only the commits after it. Non-copies before it, which `main
 are listed, up to `REWRITTEN_LISTED`. The two `log` reads are metadata only, with no diffs, and the
 second is short for any branch cut from a recent `main`.
 
+**Commits that already landed.** `add` calls `already_landed` (vocaro/queuekeeper#352) for the
+tip's non-merge commits that `origin/main` lacks by ID but holds as an equal patch, the ones
+`git rev-list --cherry-pick --right-only origin/main...TIP` leaves out, as `git rebase` does. A
+branch kept after its landing holds them under their old IDs, since the queue's replay gave them
+new ones, and replaying one can conflict with a later landed commit that changed the same lines.
+When there are any, `add` replays the rest with `linear`, as for a merge refresh, queues that
+replay and records the branch's tip as `replays`. `linear` leaves out the same commits for a merge
+refresh too. A replay that conflicts raises `Refused` with `reasonCode` `already-landed`,
+`action` `rebase`, retryable, and `git rebase --onto origin/main NEWEST [REF]` when the landed
+commits are the branch's oldest, else `git rebase origin/main [REF]`. A commit the queue landed by
+settling a conflict has another patch, so it is not left out.
+
 **A project's first landing** reads the entry's `queuekeeper.json`, and the batch's in a round,
 only while `origin/main` has none that names lanes. The settings that loosen checking
 (`hookCoveredBy`, `unread`, `preflight`, `fullRun`, `addOnlyJson`, and each lane's `inputs`) count only
