@@ -1593,6 +1593,9 @@ def perform(argv, report):
     commands.add_parser("timing", help="each lane's timing baseline on this Mac, its p90 over its recent passing "
         "runs, which a run warns past live, and its fail threshold: qk timing show [--json]; and qk timing stale "
         "LANE ... | --all --reason WHY, after a deliberate change to a lane's work")
+    commands.add_parser("pr", help="check a GitHub pull request on the owner's Macs: qk pr check [NUMBER] "
+        "[--lane LANE ...] runs each lane, gate by default, on the pull request merged with its base and posts "
+        "queuekeeper/LANE commit statuses on its head that a ruleset can require")
     commands.add_parser("progress", help="say how far each long run started here has got, from another shell: qk "
         "unittest's processes finished, failed and running, and when it last moved, or an admitted runner's output; "
         "qk progress [--all] [RUN ...]")
@@ -1795,6 +1798,9 @@ def perform(argv, report):
     if argv[first:first + 1] == ["unittest"]: return parallel.unittest_main(argv[first + 1:])
     if argv[first:first + 1] == ["progress"]: return run_progress.main(argv[first + 1:], project)
     if argv[first:first + 1] == ["timing"]: return lane_timing.main(Path(project or ".").resolve(), argv[first + 1:])
+    if argv[first:first + 1] == ["pr"]:
+        from . import pull_requests
+        return pull_requests.main(Path(project or ".").resolve(), argv[first + 1:])
     if argv[first:first + 1] and argv[first] in plugins.COMMANDS:
         return plugins.COMMANDS[argv[first]][1](argv[first + 1:], project)
     # The farm's Macs are the owner's and this Mac's, and no project's.

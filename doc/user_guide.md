@@ -144,6 +144,9 @@ In such a project:
   instead of all building at once. Name the lanes as you like; none has to be `gate`.
 - **`qk land` queues nothing.** It says the project integrates through pull requests and what
   to do instead. `qk queue` has no entries for it.
+- **`qk pr check`** runs the project's lanes on a pull request and posts the results as
+  statuses GitHub can require
+  ([Checking a pull request on your Macs](#checking-a-pull-request-on-your-macs)).
 - **`qk agents setup`** writes the pull-request rule into the agent instructions, and its guard
   still refuses pushing to `main` and `gh pr merge`, pointing agents to a pull request instead
   of `qk land` ([Tell your agents](#tell-your-agents)). Syncing local `main` with
@@ -154,6 +157,35 @@ In such a project:
 To move a project from one mode to the other, change `integration` and run `qk agents setup`
 again, which rewrites the rule it wrote. Moving to `"direct-main"` also needs a `gate` lane and a
 `main` that Queuekeeper may push to, so remove any rule that requires a pull request.
+
+#### Checking a pull request on your Macs
+
+A pull-request project has no merge queue to test its changes, but its lanes can still be the
+check GitHub waits for, run on your Macs and not on a hosted runner. With
+[`gh`](https://cli.github.com) installed and signed in, run this in the project:
+
+```sh
+qk pr check 42
+```
+
+- **What it tests.** It fetches the pull request's head and base and merges them in a checkout
+  of its own under the repository's Git directory, `.git/queuekeeper-pr-checks/42`, kept between
+  checks so builds stay warm. The merge is what would land, so that is what the lanes run on.
+  Without a number it checks the current branch's pull request.
+- **What it runs.** Each lane runs as `qk run LANE` in that checkout, so it waits for admission
+  and goes to whichever Mac has room. The default is `gate`; name others with `--lane LANE`,
+  repeated.
+- **What it posts.** On the pull request's head commit, a commit status named `queuekeeper/LANE`
+  for each lane: `pending` when it starts, then `success` or `failure`. A head that conflicts with
+  its base fails without running. A run with no verdict, such as an unmeasured one, stays
+  `pending`, never `success`; run the check again.
+- **Exit status.** 0 when every lane passed, 1 when one failed or the check could not start,
+  and 75 when a lane gave no verdict or the same pull request is being checked already.
+
+To make GitHub wait for it, add `queuekeeper/gate` (or each `queuekeeper/LANE`) as a required
+status check in the branch's ruleset. A status belongs to the commit it tested, so a push after
+the check started needs a new check. Nothing runs it for you yet: run it yourself, or have the
+agent run it in the background after opening the pull request.
 
 ### Tell your agents
 

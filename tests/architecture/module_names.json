@@ -37,6 +37,7 @@
     "queuekeeper.preflight",
     "queuekeeper.processes",
     "queuekeeper.progress",
+    "queuekeeper.pull_requests",
     "queuekeeper.recovery",
     "queuekeeper.remote",
     "queuekeeper.resources",
