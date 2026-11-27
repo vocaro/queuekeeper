@@ -2629,10 +2629,22 @@ TRAILER_REFERENCE = re.compile(r"^[A-Za-z][\w-]*(?: [A-Za-z][\w-]*)?:?[ \t]+" + 
                                re.I | re.M)
 
 
+# A line of a trailer paragraph: a "Key: value" trailer, or a line that is only a trailer reference such as "Refs #17".
+TRAILER_LINE = re.compile(r"[A-Za-z][\w-]*:[ \t]+\S.*|" + TRAILER_REFERENCE.pattern.removeprefix("^") + r"[ \t]*", re.I)
+
+
 def message_trailers(message):
-    """The final paragraph of each NUL-separated commit message that has a body, where trailers live."""
-    paragraphs = (re.split(r"\n[ \t]*\n", each.strip()) for each in message.split("\0"))
-    return "\0".join(each[-1] for each in paragraphs if len(each) > 1)
+    """The trailers of each NUL-separated commit message that has a body: its final paragraph, and the paragraphs
+    just before it made only of trailer lines, as when "Refs #17" stands apart from a closing Co-Authored-By."""
+    kept = []
+    for each in message.split("\0"):
+        paragraphs = re.split(r"\n[ \t]*\n", each.strip())
+        if len(paragraphs) < 2: continue
+        start = len(paragraphs) - 1
+        while start > 1 and all(TRAILER_LINE.fullmatch(line.strip()) for line in paragraphs[start - 1].splitlines()):
+            start -= 1
+        kept.append("\n\n".join(paragraphs[start:]))
+    return "\0".join(kept)
 
 
 def entry_issue(branch, subject, message, repository):
