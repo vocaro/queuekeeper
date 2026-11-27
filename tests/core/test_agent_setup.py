@@ -183,6 +183,7 @@ class Agents(unittest.TestCase):
         status, said = self.qk("setup")
         self.assertEqual(status, 0, said)
         self.assertIn("landing labeled pull requests through the merge queue", said)
+        self.assertIn("have a person label it for the merge queue", said)
         self.assertIn(agent_setup.PULL_REQUEST_QUEUE_RULE, (self.root / "AGENTS.md").read_text())
         self.assertEqual(self.qk("check")[0], 0)
         self.integrate("pull-request")

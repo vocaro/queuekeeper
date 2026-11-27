@@ -195,7 +195,14 @@ class LabeledPullRequestsQueued(PullRequestProject):
         status, asked, said = self.scan(request, refused={7})
         self.assertEqual((status, asked), (0, [7]))
         self.assertIn("was not queued", said[0])
-        self.assertEqual(self.scan(request, refused={7})[1], [])
+        status, asked, said = self.scan(request, refused={7})
+        self.assertEqual(asked, [])
+        # Said as skipped, with why, rather than as nothing waiting (vocaro/queuekeeper#392).
+        with patch.object(pull_requests, "labeled", return_value=[request]), patch.object(mq.Queue, "start"):
+            told = []
+            mq.queue_labeled(self.repo, say=told.append, quiet=False)
+        self.assertEqual(told, ["no pull request labeled queue is waiting to be queued; skipped until pushed again: "
+                                "#7 (it holds a merge)"])
         self.assertEqual(self.scan(self.pull(7, "feature.txt", content="rebased"), refused={7})[1], [7])
 
     def test_an_entry_removed_at_its_head_is_queued_again_while_labeled(self):
@@ -214,6 +221,25 @@ class LabeledPullRequestsQueued(PullRequestProject):
         [entry] = mq.Queue(self.repo).all()
         self.assertEqual(entry["state"], "landed")
         self.assertEqual(self.parents(entry["landedAs"])[1], request["head"])
+
+    def test_waiting_on_landed_pull_requests_says_github_marks_them_merged(self):
+        request = self.pull(7, "feature.txt")
+        identifier = self.queue(request)
+        with contextlib.redirect_stdout(io.StringIO()): self.work()
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(mq.wait_for(self.repo, [identifier], 5), 0)
+        self.assertIn("all landed: GitHub marks each pull request merged", said.getvalue())
+        self.assertNotIn("`qk land` again", said.getvalue())
+
+    def test_the_after_round_look_runs_while_the_worker_holds_its_lock(self):
+        held = []
+        request = self.pull(7, "feature.txt")
+        self.queue(request)
+        # What `qk queue status` reads as a running worker (Queue.working), asked from another Queue as status does.
+        with patch.object(mq, "scan_labeled", lambda root: held.append(mq.Queue(self.repo).working())), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.work()
+        self.assertTrue(held and all(held), held)
 
     def test_gh_that_cannot_list_is_said_and_queues_nothing(self):
         said = []

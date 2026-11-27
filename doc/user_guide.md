@@ -237,9 +237,10 @@ ahead of it, batches and bisects as it does for `qk land`, and merges what passe
   `qk land --pr NUMBER` queues it at once. A label works
   where a GitHub review cannot: when agents push with your own account, you are the author, and
   GitHub does not let an author approve their own pull request. `qk land --pr` refuses a pull
-  request that is closed, a draft, not based on `main`, or not labeled.
+  request that is closed, a draft, not based on `main`, or not labeled. Since GitHub records the
+  label as yours whoever adds it, the [guard](#claude-codes-hooks) keeps agents from adding it.
 - **It lands as a merge.** The queue merges the pull request's head into `main` with a merge
-  commit, `Merge pull request #N from BRANCH`, tests that, and pushes exactly what it tested.
+  commit, `Merge pull request #N from OWNER/BRANCH`, tests that, and pushes exactly what it tested.
   GitHub marks the pull request merged, since its head is then on `main`. The entry's `landedAs`
   is the merge commit.
 - **Its history must be a line from `main`.** A pull request with a merge in it, such as one
@@ -4056,7 +4057,11 @@ by hand and points the agent to `qk land --wait`, or, in a project with
   only what is printed or fetched may join them; `git merge --abort`, `--continue` and `--quit` also
   pass;
 - moving `main` with `git update-ref` or `git branch -f`;
-- `gh pr merge`.
+- `gh pr merge`;
+- in a project with `"integration": "pull-request-queue"`, adding the queue's label to a pull
+  request, the person's approval: `gh pr edit` or `gh issue edit` with `--add-label`,
+  `gh pr create` or `gh issue create` with `--label`, and a `gh api` write to an issue's or
+  pull request's labels or GraphQL's `addLabelsToLabelable`. Taking the label off passes.
 
 It reads each command of a line, follows `cd`, `git -C` and `sh -c`, and skips redirections,
 variable assignments and `sudo`. It is a guard rail against a mistake, not a security boundary,

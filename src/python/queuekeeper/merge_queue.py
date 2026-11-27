@@ -2772,9 +2772,10 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
                          f"\"{PULL_REQUEST_QUEUE}\", and {config.get('name')} has \"{integration}\"")
     if integration == "pull-request":
         raise ValueError(f"{config.get('name')} integrates through pull requests (\"integration\": \"pull-request\" in "
-                         "queuekeeper.json), so qk land queues nothing: push the branch and open a pull request, and "
-                         "run its checks with qk run LANE. To land through the merge queue instead, remove that "
-                         "setting and let Queuekeeper push to main (user guide, Pull requests or the merge queue)")
+                         "queuekeeper.json), so qk land queues nothing: push the branch, open a pull request and run "
+                         "`qk pr check` on it. To keep review and have the merge queue test and merge labeled pull "
+                         f"requests, set \"integration\": \"{PULL_REQUEST_QUEUE}\"; to land without pull requests, "
+                         "remove the setting (user guide, Pull requests or the merge queue)")
     gating = config
     try: lanes_of(config)
     except ValueError: lanes_of(gating := config_at(root, tip))
@@ -4355,7 +4356,9 @@ def wait_for(root, identifiers, limit=WAIT_LIMIT):
             for entry in entries: print(describe(entry))
             back = [entry["id"] for entry in entries if entry["state"] != LANDED]
             if not back:
-                print("all landed: rebase onto origin/main, then `qk land` again")
+                if all(entry.get("pullRequest") for entry in entries):
+                    print("all landed: GitHub marks each pull request merged")
+                else: print("all landed: rebase onto origin/main, then `qk land` again")
                 return 0
             print(f"{', '.join(back)} came back, so a commit that conflicted with {'them' if len(back) > 1 else 'it'} "
                   "may apply as it is: `qk land` again checks again")
@@ -9935,16 +9938,24 @@ def queue_labeled(root, say=print, quiet=True):
     try: refused = json.loads(refused_file.read_text())
     except (OSError, ValueError): refused = {}
     if not isinstance(refused, dict): refused = {}
+    # Each refusal as {"head", "why"}; an older file kept the head alone.
+    refused = {number: value if isinstance(value, dict) else {"head": value, "why": None}
+               for number, value in refused.items() if isinstance(value, (dict, str))}
+    skipped = []
     held = {(entry.get("branch"), entry.get("tip")) for entry in queue.all() if entry.get("state") != REMOVED}
     queued = 0
     for request in found:
         number, head = request["number"], request["head"]
-        if (f"pull/{number}", head) in held or refused.get(str(number)) == head: continue
+        if (f"pull/{number}", head) in held: continue
+        if refused.get(str(number), {}).get("head") == head:
+            skipped.append(f"#{number}" + (f" ({refused[str(number)]['why']})" if refused[str(number)].get("why") else ""))
+            continue
         try:
             request = pull_requests.for_queue(root, number, label)
             identifier = add(root, request["head"], quiet_wait=True, pull_request=request)
         except (ValueError, subprocess.SubprocessError, OSError) as error:
-            refused[str(number)] = head
+            refused[str(number)] = {"head": head, "why": str(error).split(":")[0][:120]}
+            skipped.append(f"#{number}")
             say(f"pull request {number}, labeled {label}, was not queued at {head[:12]}: {error}")
             continue
         if identifier:
@@ -9952,9 +9963,11 @@ def queue_labeled(root, say=print, quiet=True):
             say(f"queued pull request {number}, labeled {label}, at {head[:12]} as {identifier}")
     # What is refused stays refused only while its pull request is still labeled at that head.
     current = {str(request["number"]): request["head"] for request in found}
-    refused = {number: head for number, head in refused.items() if current.get(number) == head}
+    refused = {number: value for number, value in refused.items() if current.get(number) == value["head"]}
     with contextlib.suppress(OSError): refused_file.write_text(json.dumps(refused))
-    if not queued and not quiet: say(f"no pull request labeled {label} is waiting to be queued")
+    if not queued and not quiet:
+        say(f"no pull request labeled {label} is waiting to be queued"
+            + (f"; skipped until pushed again: {', '.join(skipped)}" if skipped else ""))
     return 0
 
 
@@ -9993,6 +10006,9 @@ def run(root, *, if_waiting=False):
                     worker.drain()
                     worker.full_run()
                     worker.catch_up()
+                    # A pull request labeled while this worker ran is this worker's to take as well (queue_labeled),
+                    # looked for while it still holds the lock, so that `qk queue status` never reads no worker then.
+                    if not queue.held(): scan_labeled(root)
             except NoLocalNetwork as lost:
                 # Holding nothing: the next `qk land`, `qk queue wait` or `qk queue resume` starts a worker of its
                 # session's, and a hold would wait for a session to resume it instead.
@@ -10021,8 +10037,6 @@ def run(root, *, if_waiting=False):
                              f"{sum(CLEARING_WAITS[:tries])}s did not clear it{passed_push(queue)}")
                 queue.hold(worded(kind, cause))
                 return 1
-        # A pull request labeled while this worker ran is this worker's to take as well (queue_labeled).
-        if not queue.held(): scan_labeled(root)
         # An entry added after the last look, while its adder found this worker running, is this
         # worker's to take: its adder's own worker has already exited.
         if queue.held() or not queue.waiting(): return 0
