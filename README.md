@@ -39,11 +39,7 @@ queues, including other local queues for AI agents, and says where they are the 
 ## Getting started
 
 Queuekeeper needs macOS, Python 3.14 or newer and Git. Each project needs an `origin` remote it can
-push to without a prompt. Its merge queue pushes changes to `main` itself; a project that lands
-through pull requests instead sets `"integration": "pull-request"` and uses the rest of
-Queuekeeper, its admission, build farm, simulators, devices and dashboard, without the queue
-([Pull requests or the merge queue](doc/user_guide.md#pull-requests-or-the-merge-queue)).
-Start with one Mac and [add more](doc/user_guide.md#add-another-mac)
+push to without a prompt. Start with one Mac and [add more](doc/user_guide.md#add-another-mac)
 later if builds need it. You can do each step below yourself, following the
 [user guide](doc/user_guide.md#set-up), or ask an agent to do it.
 
@@ -51,7 +47,9 @@ later if builds need it. You can do each step below yourself, following the
    `python3 tools/install-checkout.py`. Keep the checkout: the installed `qk` command runs from it
    ([details](doc/user_guide.md#install)).
 2. **Configure each project.** Add a `queuekeeper.json` whose gate runs the project's checks, enable
-   the [plugins](#plugins) it needs, and resolve what `qk doctor` reports. Each project keeps its own
+   the [plugins](#plugins) it needs, and resolve what `qk doctor` reports. A project that merges
+   through pull requests instead of the merge queue also sets `"integration": "pull-request"`
+   ([details](doc/user_guide.md#pull-requests-or-the-merge-queue)). Each project keeps its own
    gate and queue while sharing the Mac's capacity.
 3. **Teach your agents.** Run `qk agents setup --guard` in each project. It writes the
    [agent instructions](doc/user_guide.md#tell-your-agents) into `AGENTS.md` or `CLAUDE.md`, so agents
