@@ -39,8 +39,11 @@ queues, including other local queues for AI agents, and says where they are the 
 ## Getting started
 
 Queuekeeper needs macOS, Python 3.14 or newer and Git. Each project needs an `origin` remote it can
-push to without a prompt and must allow changes to land directly on `main`; Queuekeeper does not
-integrate through pull requests. Start with one Mac and [add more](doc/user_guide.md#add-another-mac)
+push to without a prompt. Its merge queue pushes changes to `main` itself; a project that lands
+through pull requests instead sets `"integration": "pull-request"` and uses the rest of
+Queuekeeper, its admission, build farm, simulators, devices and dashboard, without the queue
+([Pull requests or the merge queue](doc/user_guide.md#pull-requests-or-the-merge-queue)).
+Start with one Mac and [add more](doc/user_guide.md#add-another-mac)
 later if builds need it. You can do each step below yourself, following the
 [user guide](doc/user_guide.md#set-up), or ask an agent to do it.
 
@@ -54,9 +57,11 @@ later if builds need it. You can do each step below yourself, following the
    [agent instructions](doc/user_guide.md#tell-your-agents) into `AGENTS.md` or `CLAUDE.md`, so agents
    land work with `qk land --wait` instead of pushing to `main` and run builds and tests through
    `qk run` or `qk admit`, and adds Claude Code hooks that report entries that came back when a
-   session starts and refuse pushes to `main`. Installing `qk` alone does not change how agents work.
+   session starts and refuse pushes to `main`. In a pull-request project the instructions tell
+   agents to open a pull request instead. Installing `qk` alone does not change how agents work.
 4. **Land the setup.** Commit the configuration and agent instructions on a branch, then run
-   `qk land --wait` and follow it to its result. The first landing uses the checks in the setup
+   `qk land --wait` and follow it to its result, or merge them through a pull request in a
+   pull-request project. The first landing uses the checks in the setup
    commit and creates `main` if the remote has none. Later landings use `main`'s queue policy
    ([details](doc/user_guide.md#a-projects-first-landing)).
 5. **Follow the work** in the [dashboard](#dashboard), through

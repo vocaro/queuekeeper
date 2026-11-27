@@ -216,6 +216,21 @@ class Guard(Repository):
         self.assertIsNotNone(self.decision("git merge --ff-only work", self.main))
         self.assertIsNotNone(self.decision("git pull --ff-only", self.main))
 
+    def test_a_pull_request_project_is_pointed_to_a_pull_request(self):
+        (self.linked / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "x",
+                                                                  "integration": "pull-request"}))
+        for command in ("git push origin main", "gh pr merge 12 --squash"):
+            with self.subTest(command=command):
+                found = self.hook("pre-tool-use", {"tool_name": "Bash", "tool_input": {"command": command},
+                                                   "cwd": str(self.linked)})
+                why = found["hookSpecificOutput"]["permissionDecisionReason"]
+                self.assertEqual(found["hookSpecificOutput"]["permissionDecision"], "deny")
+                self.assertIn("open a pull request", why)
+                self.assertNotIn("qk land", why)
+        self.assertIsNone(self.decision("git push origin work"))
+        # The main checkout, whose queuekeeper.json does not say so, still lands through the queue.
+        self.assertIsNotNone(self.decision("git push origin main", self.main))
+
     def test_other_tools_and_the_owners_switch_pass(self):
         found = self.hook("pre-tool-use", {"tool_name": "Write", "tool_input": {"command": "git push origin main"}})
         self.assertIsNone(found)

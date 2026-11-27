@@ -9,8 +9,10 @@ nothing and exits 0.
   suggested commands. An agent otherwise learns of a send-back only while it follows `qk land --wait`.
 - pre-tool-use refuses a Bash command that would land on main by hand, `git push` to main, `git merge` or `git pull`
   on main other than a fast-forward to the remote's main, moving main with `git update-ref` or `git branch -f`, and
-  `gh pr merge`, and points the agent to `qk land`. It is a guard rail against a mistake, not a security boundary:
-  it reads the command's words, follows `cd`, `git -C` and `sh -c`, and lets through anything it cannot parse."""
+  `gh pr merge`. It points the agent to `qk land`, or, in a project whose queuekeeper.json says
+  `"integration": "pull-request"`, to a pull request that a person merges (vocaro/queuekeeper#374). It is a guard rail
+  against a mistake, not a security boundary: it reads the command's words, follows `cd`, `git -C` and `sh -c`, and
+  lets through anything it cannot parse."""
 import json
 import os
 import re
@@ -28,6 +30,8 @@ WHY_LIMIT = 600
 SENT_BACK = ("failed", "conflict")
 WAITING = ("queued", "testing", "passed")
 GUARD_SWITCH = "QUEUEKEEPER_GUARD"
+# How a project's changes reach main: queuekeeper.json's "integration", which config.parse checks.
+DIRECT_MAIN, PULL_REQUEST = "direct-main", "pull-request"
 
 
 def git(directory, *words):
@@ -37,6 +41,14 @@ def git(directory, *words):
                                env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"})
     except (OSError, subprocess.SubprocessError): return None
     return found.stdout.strip() if found.returncode == 0 else None
+
+
+def integration(root):
+    """How the project checked out at root integrates, from its queuekeeper.json: pull-request or direct-main, the
+    default, which a missing or unreadable file gives too. A hook reads it raw, as it must not fail over a setting."""
+    try: value = json.loads((Path(root) / "queuekeeper.json").read_text()).get("integration", DIRECT_MAIN)
+    except (OSError, ValueError, AttributeError): return DIRECT_MAIN
+    return PULL_REQUEST if value == PULL_REQUEST else DIRECT_MAIN
 
 
 def event():
@@ -349,11 +361,17 @@ def pre_tool_use(payload):
     if payload.get("tool_name") != "Bash": return None
     command = (payload.get("tool_input") or {}).get("command")
     if not isinstance(command, str): return None
-    why = refusal(command, Path(payload.get("cwd") or os.getcwd()))
+    directory = Path(payload.get("cwd") or os.getcwd())
+    why = refusal(command, directory)
     if not why: return None
+    top = git(directory, "rev-parse", "--show-toplevel")
+    switch = f"A person can turn this guard off with {GUARD_SWITCH}=off in Claude Code's environment."
+    if top and integration(top) == PULL_REQUEST:
+        return (f"Queuekeeper refused this: {why}, and in this project changes reach main only through a pull request "
+                "that a person merges. Commit on your own branch, push it and open a pull request, and leave the "
+                f"merge to a person. {switch}")
     return (f"Queuekeeper refused this: {why}, and changes reach main only through the merge queue. Commit on your own "
-            "branch and run `qk land --wait` as a background command, following it to its result. A person can turn "
-            f"this guard off with {GUARD_SWITCH}=off in Claude Code's environment.")
+            f"branch and run `qk land --wait` as a background command, following it to its result. {switch}")
 
 
 def main(argv, project=None):

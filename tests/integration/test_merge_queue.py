@@ -10767,7 +10767,8 @@ class Refusals(Fixture):
     def test_pull_request_projects_are_refused(self):
         self.publish({"schemaVersion": 1, "name": "x", "integration": "pull-request",
                       "lanes": {"gate": {"command": ["true"]}}})
-        with self.assertRaisesRegex(ValueError, "pull request"): mq.add(self.repo, "HEAD")
+        with self.assertRaisesRegex(ValueError, "integrates through pull requests.*open a pull request"):
+            mq.add(self.repo, "HEAD")
 
     def test_a_project_with_nothing_to_run_is_refused(self):
         self.publish({"schemaVersion": 1, "name": "x", "lanes": {"docs": {"command": ["true"]}}})
