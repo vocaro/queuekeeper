@@ -841,7 +841,24 @@ The user guide's [Receipts and outcomes](user_guide.md#receipts-and-outcomes) an
   It reports `quietSeconds` and the `source` that changed last. It has its own copy of
   `run_progress`'s paths because it can't import the toolkit, and a test keeps them equal. It
   reads file times only: it never stops anything. Queue doctor notes a holder whose files haven't
-  moved for `merge_queue.UNMOVED_NOTE` (`health.SILENT`) and makes no finding of it.
+  moved for longer than `merge_queue.unmoved_bound` allows, and makes no finding of it.
+- **A holder's quiet bound.** `offload_host.admissions_now` gives each holder whose files it
+  reads a `quietBound`, from that Mac's own admission log (`past_holds`, `quiet_bound`): the
+  latest `QUIET_HOLDS` (20) holds of the same label that ended `released`, and, once
+  `QUIET_HOLDS_NEEDED` (5) are logged, `QUIET_MARGIN` (1.5) times the longest. A quiet interval
+  lies inside one hold, so no healthy run of the lane was quiet longer than its longest hold;
+  the maximum, not a percentile, is the reading that fact supports, and with at most 20 readings
+  a high percentile would be the maximum anyway. The margin allows a run somewhat slower than any
+  logged. Five readings is the number `MEASURED_RUNS` uses for a lane's measured time and the
+  number the owner asked for before any bound is trusted. The log records no verdict for most
+  lanes, so `released` (ended without a timeout, stop or uncertain end) stands for a healthy
+  hold. A long hold that ended `released` after a stall raises the bound until 20 newer holds
+  age it out. `merge_queue.unmoved_bound` uses the measure when it is at least `UNMOVED_NOTE`
+  (`health.SILENT`) and the default otherwise, so a short lane's measure never makes the note
+  fire sooner than before, and a Mac running an older version, which sends no `quietBound`,
+  gets the default. The note's words say which bound applied and from how many holds. This is
+  a display rule only. The proposed stopping bound in vocaro/queuekeeper#70 is separate and not
+  enabled.
 
 `qk doctor --check-only` skips repairs and invokes only plugin callbacks that opt in through
 `plugins.DOCTOR_WITHOUT_REPAIRS`. A read-only callback maps to itself. A normal callback that

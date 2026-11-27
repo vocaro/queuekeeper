@@ -2065,6 +2065,48 @@ def holder_activity(owner, since, at):
     return {"quietSeconds": round(max(0.0, at - when), 1), "source": what}
 
 
+# How queue doctor's note on an unmoved holder learns how long that lane's files may go unchanged, from its own past
+# holds on this Mac (vocaro/queuekeeper#70): the latest QUIET_HOLDS admissions of its label that ended released, of
+# which it needs QUIET_HOLDS_NEEDED, and QUIET_MARGIN times the longest of them. A quiet interval falls inside one hold,
+# so no healthy run's quiet was longer than its longest hold. The developer guide says why these numbers.
+QUIET_HOLDS, QUIET_HOLDS_NEEDED, QUIET_MARGIN = 20, 5, 1.5
+
+
+def past_holds(labels):
+    """{label: the seconds of its latest QUIET_HOLDS holds that ended released, oldest first} for each of labels, from
+    this Mac's admission log, previous generation first; None when the log cannot be read. A log not yet written
+    records none. It reads without admission's lock, as the log is only appended to and a torn last line is skipped."""
+    found = {label: [] for label in labels}
+    if not found: return found
+    directory = admission_directory()
+    for name in ADMISSION_LOGS:
+        try:
+            with (directory / name).open("rb") as stream: lines = stream.read().splitlines()
+        except FileNotFoundError: continue
+        except OSError: return None
+        for line in lines:
+            if b'"ended"' not in line: continue
+            try: entry = json.loads(line)
+            except ValueError: continue
+            if not isinstance(entry, dict) or entry.get("event") != "ended" or entry.get("outcome") != "released":
+                continue
+            held, kept = entry.get("held"), found.get(entry.get("label"))
+            if kept is None or type(held) not in (int, float) or held < 0: continue
+            kept.append(float(held))
+            if len(kept) > QUIET_HOLDS: del kept[0]
+    return found
+
+
+def quiet_bound(held):
+    """What a holder's past holds (past_holds) say of how long its files may go unchanged: {"holds", "longestSeconds",
+    "needed", "seconds"}, seconds None when fewer than QUIET_HOLDS_NEEDED are logged. None when they could not be read."""
+    if held is None: return None
+    longest = max(held) if held else None
+    return {"holds": len(held), "longestSeconds": None if longest is None else round(longest, 1),
+            "needed": QUIET_HOLDS_NEEDED,
+            "seconds": round(QUIET_MARGIN * longest, 1) if len(held) >= QUIET_HOLDS_NEEDED else None}
+
+
 def reclaimed_lately(at):
     """The holders admission freed in the NOW_RECLAIMED_SECONDS before at, their owners ended or unknown
     (resources.free_holder), newest first, at most NOW_RECLAIMED, from the end of this Mac's admission log: each with
@@ -2306,6 +2348,12 @@ def admissions_now(at=None):
         if used is None: reasons.append("ps could not say how much CPU the holders use")
         for holder in holders:
             holder["cpuPercent"] = (used or {}).get(holder["pid"]) if holder["process"] == "running" else None
+        # How long each holder whose files are read may go unchanged, from its lane's own past holds here (#70).
+        watched = [holder for holder in holders if holder["activity"] is not None]
+        held = past_holds({holder["label"] for holder in watched}) if watched else {}
+        for holder in holders:
+            holder["quietBound"] = quiet_bound(None if held is None else held[holder["label"]]) \
+                if holder["activity"] is not None else None
         reading["holders"] = sorted(holders, key=lambda holder: holder["admittedAt"] or 0)
         # A slot whose file still names a holder admission reclaimed is free, and says so (vocaro/queuekeeper#23).
         freed = {item["identity"] for item in reading["reclaimed"] or []}

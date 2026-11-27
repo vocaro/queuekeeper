@@ -1992,7 +1992,13 @@ holder's `activity`: `quietSeconds` and `source`. This reads file times only. Wo
 or waits without writing looks quiet, and another run in the same directory makes it look
 active. A holder admitted by an older version names no directory, so its progress isn't observed.
 `qk queue doctor` adds a note, never a finding, for a holder whose files haven't changed for
-15 minutes, the time a running gate may go without movement. Nothing here stops a holder.
+longer than its lane's own past holds on that Mac allow: one and a half times the longest of
+the lane's latest 20 admissions that ended normally, once at least 5 are logged. A lane with
+fewer, or whose measure is under 15 minutes, is judged by the default of 15 minutes, the time a
+running gate may go without movement. The note names the bound that applied and where it came
+from: measured from how many past holds, or the default and why. JSON gives the measure as the
+holder's `quietBound`: `holds`, `longestSeconds`, `needed` and `seconds`, which is null when
+too few holds are logged. Nothing here stops a holder.
 
 A fresh, verified JSON waiter can include `lane`, the configured name of a whole single lane
 fixed to this Mac by `--here` or the lane's `here` setting. The field is optional. Groups,

@@ -3790,23 +3790,48 @@ def quiet_findings(reported):
                               f"`{qk_said('admissions now')}` shows its current progress",
                     "mac": mac, "holder": holder})
             elif isinstance(holder, dict) and unmoved_for(holder) is not None:
-                # No lane of it declares `stall`, so no measured bound judges it: a note, never a finding.
-                notes.append(f"unmoved admission holder on {mac}: {holder_words(holder)}: longer than the "
-                             f"{resources.duration(UNMOVED_NOTE)} a running gate may go unmoved; report only, as no "
-                             "measured bound applies to it (vocaro/queuekeeper#70): ask the session that owns it to "
-                             "check its run")
+                # No lane of it declares `stall`, so no observation of its own judges it: a note, never a finding.
+                notes.append(f"unmoved admission holder on {mac}: {holder_words(holder)}: longer than "
+                             f"{unmoved_bound(holder, mac)[1]}; report only (vocaro/queuekeeper#70): ask the session "
+                             "that owns it to check its run")
     return findings, notes
 
 
 def unmoved_for(holder):
     """How long the files a running holder's work writes have gone unchanged (offload_host.holder_activity), when that
-    is at least UNMOVED_NOTE and no observation of its own covers it; else None."""
+    is at least its bound (unmoved_bound) and no observation of its own covers it; else None."""
     activity = holder.get("activity")
     if holder.get("process") != "running" or holder.get("stranded") or holder.get("progress") or \
             not isinstance(activity, dict):
         return None
     quiet = activity.get("quietSeconds")
-    return quiet if type(quiet) in (int, float) and UNMOVED_NOTE <= quiet < float("inf") else None
+    return quiet if type(quiet) in (int, float) and unmoved_bound(holder)[0] <= quiet < float("inf") else None
+
+
+def unmoved_bound(holder, mac="its Mac"):
+    """(seconds, words) of how long a holder's files may go unchanged before queue doctor notes it: what its lane's own
+    past holds on its Mac measure (offload_host.quiet_bound), or UNMOVED_NOTE when they measure less or are too few to
+    measure, or were not read, as on a Mac whose older version reads none. The words say which and where it came
+    from. A display rule, never a stopping bound (vocaro/queuekeeper#70)."""
+    said = resources.duration
+    default = f"the {said(UNMOVED_NOTE)} a running gate may go unmoved, the default bound"
+    bound = holder.get("quietBound")
+    if not isinstance(bound, dict) or type(bound.get("holds")) is not int:
+        return UNMOVED_NOTE, f"{default}, as no past holds of it were read on {mac}"
+    holds, needed = bound["holds"], bound.get("needed")
+    measured, longest = bound.get("seconds"), bound.get("longestSeconds")
+    longest = said(longest) if type(longest) in (int, float) else None
+    if type(measured) not in (int, float) or measured < 0:
+        count = "no past holds of it are" if not holds else f"only {holds} past hold{'' if holds == 1 else 's'} " \
+                                                             f"of it {'is' if holds == 1 else 'are'}"
+        return UNMOVED_NOTE, (f"{default}, as {count} logged on {mac}"
+                              + (f", of the {needed} a measured bound needs" if type(needed) is int else "")
+                              + (f" (the longest {longest})" if longest and holds else ""))
+    how = (f"{offload_host.QUIET_MARGIN:g} times the longest of them" + (f", {longest}" if longest else ""))
+    if measured < UNMOVED_NOTE:
+        return UNMOVED_NOTE, f"{default}, which is longer than the {said(measured)} measured from its {holds} past " \
+                             f"holds on {mac} ({how})"
+    return measured, f"the {said(measured)} bound measured from its {holds} past holds on {mac} ({how})"
 
 
 def quiet_lanes(holder):

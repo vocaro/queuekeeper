@@ -1640,13 +1640,50 @@ class Doctor(UnittestGate):
         self.assertIn("unmoved admission holder on this Mac: python3 scripts/qk run quicklook-ipad (PID 4242, held "
                       "5h00m, CPU 3% of one core, with what it started, from repository BreezEPUB, branch quicklook, "
                       "worktree /Users/x/.claude/worktrees/quicklook-ipad, session local_1; a lane's log last changed "
-                      "25m00s ago): longer than the 15m00s a running gate may go unmoved; report only", notes[0])
+                      "25m00s ago): longer than the 15m00s a running gate may go unmoved, the default bound, as no "
+                      "past holds of it were read on this Mac; report only", notes[0])
         self.assertIn("(PID 4244,", notes[1])
         self.assertIn("nothing its work writes has changed in the 40m00s since it was admitted", notes[1])
         self.assertIn("note: unmoved admission holder on this Mac", said)
         self.assertEqual(self.snapshot(), before)
         # The time a holder's files last moved is named wherever doctor names the holder.
         self.assertIn("; a lane's log last changed 30s ago)", mq.holder_words(moving))
+
+    def test_an_unmoved_holder_is_judged_by_its_lanes_own_past_holds_and_the_note_says_which_bound(self):
+        """vocaro/queuekeeper#70: a long, quiet lane, such as a UI-test lane that writes little until a test bundle
+        ends, is judged by what its own past holds measure, not the general default, and the note names the bound
+        that applied and where it came from."""
+        def holder(identity, quiet, bound):
+            return {**self.QUICK_LOOK, "identity": identity, "pid": 4200 + len(identity), "progress": [],
+                    "label": f"BreezEPUB {identity}", "activity": {"quietSeconds": quiet, "source": "a lane's log"},
+                    "quietBound": bound}
+        measured = {"holds": 5, "longestSeconds": 3247.0, "needed": 5, "seconds": 4870.5}
+        few = {"holds": 3, "longestSeconds": 3247.0, "needed": 5, "seconds": None}
+        short = {"holds": 6, "longestSeconds": 120.0, "needed": 5, "seconds": 180.0}
+        holders = [
+            holder("ordinary", 2100.0, measured),  # 35 minutes quiet, as such a lane is on every run: no note
+            holder("beyond", 5000.0, measured),  # quieter than any of its holds took, with the margin
+            holder("few", 1500.0, few),  # too few readings: the default, which says so
+            holder("none", 1500.0, {**few, "holds": 0, "longestSeconds": None}),
+            holder("brief", 600.0, short),  # a short lane's measure never shortens the default
+            holder("briefer", 1000.0, short)]
+        with patch.object(mq.farm, "destinations", return_value=()), \
+                patch.object(offload_host, "admissions_now", return_value=self.reading(*holders)):
+            status_, said, report = self.doctor(working=False)
+        self.assertEqual((status_, report["findings"]), (0, []), said)
+        notes = {hint.split("BreezEPUB ", 1)[1].split(" ", 1)[0]: hint.split(" ago): ", 1)[1]
+                 for hint in report["hints"] if hint.startswith("unmoved admission holder")}
+        self.assertEqual(set(notes), {"beyond", "few", "none", "briefer"}, report["hints"])
+        self.assertTrue(notes["beyond"].startswith(
+            "longer than the 1h21m bound measured from its 5 past holds on this Mac (1.5 times the longest of them, "
+            "54m07s); report only (vocaro/queuekeeper#70)"), notes["beyond"])
+        self.assertTrue(notes["few"].startswith(
+            "longer than the 15m00s a running gate may go unmoved, the default bound, as only 3 past holds of it are "
+            "logged on this Mac, of the 5 a measured bound needs (the longest 54m07s); report only"), notes["few"])
+        self.assertIn("the default bound, as no past holds of it are logged on this Mac, of the 5 a measured bound "
+                      "needs; report only", notes["none"])
+        self.assertIn("the default bound, which is longer than the 3m00s measured from its 6 past holds on this Mac "
+                      "(1.5 times the longest of them, 2m00s); report only", notes["briefer"])
 
     def test_a_gate_waiting_long_on_a_busy_mac_or_briefly_on_an_idle_one_is_no_finding(self):
         # A wait on a busy Mac is no finding. The separate progress read shows no quiet holders.
