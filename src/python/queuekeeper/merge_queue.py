@@ -29,6 +29,7 @@ each waiting commit, so a branch that moves or goes takes nothing with it:
     <common>/queuekeeper-queue/hold              why the queue stopped, until `qk queue resume`
     <common>/queuekeeper-queue/closed.json       who closed the queue to new entries, why and until when, until `qk queue reopen` or then
     refs/queuekeeper/queue/ID                    the range's tip, until it lands or is removed
+    refs/queuekeeper/landed/OLD                  a branch commit a landing replaced under a new hash, kept, and pushed
     ../queuekeeper-workers/NAME/NAME            the worker's checkout, in a folder beside the main checkouts
     ../queuekeeper-workers/NAME/TOOLKIT         its copy of the toolkit, which ../TOOLKIT names from the checkout
 """
@@ -67,6 +68,8 @@ from .config import DOCS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, QUICK_L
     project_siblings, qk_said, sibling_revisions, siblings_in, stays, toolkit_command, full_run, affected_by, affected_lanes, gate_lanes, lane_inputs, matches, member_inputs, selected_members, selects_by, skips_by_inputs, unlocked_screen, unread, unread_declared, unread_lanes, unread_named
 
 MAIN = "refs/remotes/origin/main"
+# Where a landing keeps each branch commit it replaced under a new hash, and pushes it beside main (#368).
+LANDED_REF = "refs/queuekeeper/landed/"
 FETCH = ["fetch", "--no-tags", "origin", f"refs/heads/main:{MAIN}"]
 LAUNCHER_BUNDLE = "com.vocaro.queuekeeper.launcher"
 LAUNCHER_PROGRAM = "QueueLauncher"
@@ -3065,6 +3068,19 @@ def stopping(queue, entry):
             f"its lanes end, at most {LANE_LIMIT / 3600:g} h a lane, and holds the queue until then")
 
 
+def replaced_lines(entry):
+    """What a landed entry's record says of its branch commits that landed under new hashes (Worker.keep_replaced):
+    each old commit, the commit main holds in its place and the ref that keeps it, then whether origin took the refs."""
+    replaced = entry.get("replaced") or []
+    if not replaced: return []
+    lines = [f"replaced: {item['commit']} -> {item['landedAs']}, kept as {item['ref']}" for item in replaced]
+    refs = entry.get("replacedRefs") or {}
+    if not refs.get("pushed"):
+        lines.append(f"replaced refs not on {refs.get('remote', 'origin')}: {refs.get('error') or 'not pushed'}; they are "
+                     f"kept here, and `git push origin '{LANDED_REF}*:{LANDED_REF}*'` pushes them")
+    return lines
+
+
 def describe(entry):
     line = f"{entry['state']:8} {entry['id']}  {entry['subject']}"
     if entry.get("landedAs"):
@@ -3073,6 +3089,7 @@ def describe(entry):
         if entry.get("landedCommits", 1) > 1: line += f" ({entry['landedCommits']} commits)"
         if entry.get("landedTip", entry["landedAs"]) != entry["landedAs"]:
             line += f", in batch tip {entry['landedTip'][:12]}"
+    for said in replaced_lines(entry): line += f"\n         {said}"
     if entry["state"] == PASSED:
         verdict = entry["passed"]
         line += (f"\n         passed at {verdict['head'][:12]} on {verdict['base'][:12]}: the push lands it without "
@@ -6133,12 +6150,14 @@ class Worker:
         the app kept and the shared checkout followed, as after any landing. reconciled says the push's answer
         never came, and a later fetch found head on origin/main (reconcile)."""
         own = self.landed(batch, base, head)
+        replaced = self.keep_replaced(batch, base, head)
         self.queue.emit("batch.pushed", head=head, base=base, entries=[entry["id"] for entry in batch],
                         ungated=bool(ungated) or None, reconciled=reconciled or None)
         for entry in batch:
             commit, count = own.get(entry["id"], (head, 0))
             self.queue.settle(entry, LANDED, landedAs=commit, landedTip=head,
                               **({"landedCommits": count} if count else {}),
+                              **replaced.get(entry["id"], {}),
                               **({"docsOnly": docs} if docs else {}),
                               **({"docsNamed": named} if named else {}),
                               **({"ungated": ungated} if ungated else {}),
@@ -6303,22 +6322,81 @@ class Worker:
         matched in order, as the batch was picked in order. An entry none of whose commits the range holds, as when
         main already had each, is left out, and records the tip, which holds it. A base of None, for the landing that
         created main (first_landing), reads every commit to head."""
+        own = {}
+        for identifier, _, commit in self.matched(batch, base, head):
+            own[identifier] = (commit, own.get(identifier, (None, 0))[1] + 1)
+        return own
+
+    def matched(self, batch, base, head, commits_of=lambda entry: entry["commits"]):
+        """[(entry id, its commit of commits_of(entry), the commit in base..head that is it)], in order: a pushed
+        commit is an entry's by author, author date and subject, as landed says."""
         form = "--format=%H%x00%an%x00%ae%x00%ad%x00%s"
         def keyed(output):
             return [(line.split("\0", 1)[0], line.split("\0", 1)[1]) for line in output.splitlines() if line]
         expected = []
         for entry in batch:
-            originals = keyed(text(self.checkout, "show", "-s", "--date=raw", form, *entry["commits"]))
-            expected += [(entry["id"], key) for _, key in originals]
-        own, position = {}, 0
+            commits = commits_of(entry)
+            if not commits: continue
+            expected += [(entry["id"], commit, key)
+                         for commit, key in keyed(text(self.checkout, "show", "-s", "--date=raw", form, *commits))]
+        found, position = [], 0
         for commit, key in keyed(text(self.checkout, "log", "--reverse", "--date=raw", form,
                                       f"{base}..{head}" if base else head)):
-            match = next((index for index in range(position, len(expected)) if expected[index][1] == key), None)
+            match = next((index for index in range(position, len(expected)) if expected[index][2] == key), None)
             if match is None: continue
-            identifier = expected[match][0]
-            own[identifier] = (commit, own.get(identifier, (None, 0))[1] + 1)
+            found.append((expected[match][0], expected[match][1], commit))
             position = match + 1
-        return own
+        return found
+
+    def branch_commits(self, entry, base):
+        """The commits of entry's branch that a landing on base gives main: its own commits, or, for an entry queued
+        as a replay of its branch (add's replays: a merge refresh, or commits main already held), the branch's own
+        non-merge commits that base lacks, which it cites under their own hashes. The queued commits when the branch's
+        tip can no longer be read."""
+        if not entry.get("replays") or not base: return entry["commits"]
+        listed = git(self.checkout, "rev-list", "--reverse", "--no-merges", entry["replays"], f"^{base}")
+        return listed.stdout.split() if listed.returncode == 0 else entry["commits"]
+
+    def keep_replaced(self, batch, base, head):
+        """Keep each of the batch's branch commits that landed in base..head under another hash (#368): a ref
+        LANDED_REF + OLD at it, made here and pushed to origin beside main, so that a hash a landed tree cites, such as
+        the commit a recording was captured from, still resolves once the branch goes. {entry id: the fields its
+        record takes}: replaced, each {commit, landedAs, ref}, and replacedRefs, whether origin took the refs, with
+        git's answer when it did not. A failure here is said and recorded, and never undoes the landing."""
+        try:
+            pairs = [(identifier, old, new) for identifier, old, new in
+                     self.matched(batch, base, head, lambda entry: self.branch_commits(entry, base)) if old != new]
+        except (subprocess.SubprocessError, OSError, UnicodeError) as error:
+            self.say(f"could not read which commits landed under new hashes, so kept no refs for them: {error}")
+            return {}
+        if not pairs: return {}
+        refs = {old: f"{LANDED_REF}{old}" for _, old, _ in pairs}
+        try:
+            made = [git(self.checkout, "update-ref", ref, old) for old, ref in refs.items()]
+            unmade = next((done.stderr.strip() or f"exit {done.returncode}" for done in made if done.returncode), None)
+            if unmade:
+                unpushed = f"the refs could not be made here: {unmade}"
+            else:
+                unpushed = self.push_kept(list(refs.values()))
+        except (subprocess.SubprocessError, OSError) as error:
+            unpushed = str(error) or type(error).__name__
+        outcome = {"remote": "origin", "pushed": unpushed is None, **({"error": unpushed} if unpushed else {})}
+        if unpushed:
+            self.say(f"landed, but origin did not take the {len(refs)} ref(s) under {LANDED_REF} that keep the commits "
+                     f"replaced by new hashes: {unpushed}")
+        else:
+            self.say(f"kept {len(refs)} replaced commit(s) under {LANDED_REF} on origin")
+        fields = {}
+        for identifier, old, new in pairs:
+            fields.setdefault(identifier, {"replaced": [], "replacedRefs": outcome})["replaced"].append(
+                {"commit": old, "landedAs": new, "ref": refs[old]})
+        return fields
+
+    def push_kept(self, refs):
+        """Push refs, keep_replaced's, to origin under their own names, in a push of their own after main's: None
+        when origin took them, else git's answer."""
+        pushed = reach(self.checkout, "push", "--no-verify", "origin", *(f"{ref}:{ref}" for ref in refs), say=self.say)
+        return None if pushed.returncode == 0 else pushed.stderr.strip() or f"exit {pushed.returncode}"
 
     def same_push_remote(self):
         return text(self.checkout, "remote", "get-url", "--push", "origin") == \

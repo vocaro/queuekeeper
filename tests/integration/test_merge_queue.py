@@ -10172,6 +10172,97 @@ class LandedCommits(Fixture):
         self.assertEqual(own, {"a": (tip, 1)})
 
 
+class ReplacedCommits(Fixture):
+    """A branch commit the queue replays under a new hash is kept by a ref on origin, and its record and qk land's
+    output map it to the commit main holds (#368)."""
+
+    def setUp(self):
+        super().setUp()
+        self.kept_push.stop()  # the refs' real push, which Fixture leaves out
+
+    def kept_on_origin(self):
+        return run(self.origin, "git", "for-each-ref", "--format=%(refname) %(objectname)", mq.LANDED_REF).splitlines()
+
+    def move_main(self):
+        self.commit("elsewhere", "elsewhere")
+        run(self.repo, "git", "push", "-q", "origin", "elsewhere:main")
+
+    def waited(self, identifier):
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(mq.wait(self.repo, identifier), 0)
+        return said.getvalue()
+
+    def test_a_replayed_entry_keeps_each_old_commit_on_origin_and_maps_it(self):
+        first = self.commit("a1", "a")
+        (self.repo / "a2").write_text("x")
+        run(self.repo, "git", "add", "a2")
+        run(self.repo, "git", "commit", "-qm", "Add a2")
+        second = run(self.repo, "git", "rev-parse", "HEAD")
+        self.move_main()
+        [identifier] = self.add("a")
+        self.work()
+        entry = self.state(identifier)
+        self.assertEqual(entry["state"], "landed")
+        run(self.repo, "git", "fetch", "-q", "origin")
+        new_first = run(self.repo, "git", "rev-parse", f"{entry['landedAs']}^")
+        self.assertEqual(entry["replaced"], [
+            {"commit": first, "landedAs": new_first, "ref": f"{mq.LANDED_REF}{first}"},
+            {"commit": second, "landedAs": entry["landedAs"], "ref": f"{mq.LANDED_REF}{second}"}])
+        self.assertNotIn(first, (new_first, entry["landedAs"]))
+        self.assertEqual(entry["replacedRefs"], {"remote": "origin", "pushed": True})
+        self.assertEqual(sorted(self.kept_on_origin()),
+                         sorted(f"{mq.LANDED_REF}{commit} {commit}" for commit in (first, second)))
+        found = agent_results.lookup(mq.Queue(self.repo), identifier)
+        self.assertEqual((found["replaced"], found["replacedRefs"]), (entry["replaced"], entry["replacedRefs"]))
+        said = self.waited(identifier)
+        self.assertIn(f"replaced: {first} -> {new_first}, kept as {mq.LANDED_REF}{first}", said)
+        self.assertNotIn("replaced refs not on", said)
+        self.assertEqual(said.rsplit("landed: ", 1)[1].strip(), entry["landedAs"])
+        # qk land's branch deletion and qk queue reclaim touch only branches: the kept refs stay.
+        with contextlib.redirect_stdout(io.StringIO()):
+            mq.reclaim(self.repo)
+        self.assertEqual(run(self.repo, "git", "rev-parse", f"{mq.LANDED_REF}{first}"), first)
+
+    def test_an_entry_landing_under_its_own_hashes_keeps_no_ref(self):
+        fixed = {"GIT_AUTHOR_DATE": "2026-01-01T00:00:00Z", "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z"}
+        with patch.dict(os.environ, fixed):
+            own = self.commit("a", "a")
+            [identifier] = self.add("a")
+            self.work()
+        entry = self.state(identifier)
+        self.assertEqual((entry["state"], entry["landedAs"]), ("landed", own))  # the control: no replay
+        self.assertNotIn("replaced", entry)
+        self.assertNotIn("replacedRefs", entry)
+        self.assertEqual(self.kept_on_origin(), [])
+        self.assertEqual(agent_results.lookup(mq.Queue(self.repo), identifier)["replaced"], [])
+        self.assertNotIn("replaced", self.waited(identifier))
+
+    def test_a_refused_ref_push_is_reported_and_the_landing_stands(self):
+        old = self.commit("a", "a")
+        self.move_main()
+        hook = self.origin / "hooks/pre-receive"
+        hook.write_text('#!/bin/sh\nwhile read old new ref; do case "$ref" in refs/queuekeeper/*) '
+                        'echo no refs here >&2; exit 1;; esac; done\n')
+        host_isolation.executable(hook)
+        [identifier] = self.add("a")
+        self.work()
+        entry = self.state(identifier)
+        self.assertEqual(entry["state"], "landed")
+        run(self.repo, "git", "fetch", "-q", "origin")
+        self.assertEqual(run(self.repo, "git", "rev-parse", "origin/main"), entry["landedAs"])
+        self.assertEqual(entry["replaced"], [{"commit": old, "landedAs": entry["landedAs"],
+                                              "ref": f"{mq.LANDED_REF}{old}"}])
+        self.assertFalse(entry["replacedRefs"]["pushed"])
+        self.assertIn("no refs here", entry["replacedRefs"]["error"])
+        self.assertEqual(self.kept_on_origin(), [])
+        # The ref is still kept here, for a push by hand.
+        self.assertEqual(run(self.repo, "git", "rev-parse", f"{mq.LANDED_REF}{old}"), old)
+        said = self.waited(identifier)
+        self.assertIn("replaced refs not on origin", said)
+        self.assertIn("no refs here", said)
+        self.assertEqual(said.rsplit("landed: ", 1)[1].strip(), entry["landedAs"])
+
+
 class PassedThroughAHold(Fixture):
     """A batch whose lanes passed keeps that verdict through a hold its push meets, and the next worker pushes
     it without gating the same tree again (vocaro-engineering#150)."""

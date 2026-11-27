@@ -196,6 +196,11 @@ class Fixture(unittest.TestCase):
         memory = patch.object(mq, "memory_findings", return_value=([], []))
         self.memory_findings = memory.start()
         self.addCleanup(memory.stop)
+        # A landing's refs for its replaced commits go nowhere unless a test says otherwise (ReplacedCommits, #368), so
+        # that a test counting pushes or connections counts main's alone.
+        self.kept_push = patch.object(mq.Worker, "push_kept", return_value=None)
+        self.kept_push.start()
+        self.addCleanup(self.kept_push.stop)
         # qk land runs no preflight lane before it queues unless a test says so (PreflightBeforeQueued, #283).
         unchecked = patch.object(mq, "preflight_before_queued")
         unchecked.start()
