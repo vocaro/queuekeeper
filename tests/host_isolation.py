@@ -197,6 +197,9 @@ os.environ["HEAVY_BUSY_LIMIT"] = "1000"
 # (vocaro/queuekeeper#162): the suite runs on whatever this Mac has free, which says nothing of the code it tests. A test
 # of either floor sets its own.
 os.environ["QUEUEKEEPER_START_FREE_GB"] = os.environ["QUEUEKEEPER_RUN_FREE_GB"] = "0"
+# Nor does `qk disk` shorten its idle limits for this Mac's free space (vocaro/queuekeeper#377): a test of the
+# pressure sets its own trigger and goal.
+os.environ["QUEUEKEEPER_DISK_LOW_GB"], os.environ["QUEUEKEEPER_DISK_GOAL_GB"] = "0", "100"
 os.environ["QUEUEKEEPER_CRASH_DIALOG_RECORD"] = str(ROOT / "crash-dialog.json")
 # No lane a test runs reads this Mac's real crash reports for a simulator's system process (vocaro/queuekeeper#12): a
 # test that needs one writes it in a folder of its own and names that.
@@ -343,7 +346,7 @@ cli.fix_hosts = unfixed
 # What this module sets in the environment, which every process a test starts carries when it inherits that environment.
 ISOLATION = {name: os.environ[name] for name in (
     "HEAVY_SLOT_DIR", "QUEUEKEEPER_GATE_LOCK_FILE", "HEAVY_QUIET_SECONDS", "HEAVY_BUSY_LIMIT", "QUEUEKEEPER_START_FREE_GB",
-    "QUEUEKEEPER_RUN_FREE_GB",
+    "QUEUEKEEPER_RUN_FREE_GB", "QUEUEKEEPER_DISK_LOW_GB", "QUEUEKEEPER_DISK_GOAL_GB",
     "QUEUEKEEPER_CRASH_DIALOG_RECORD", "QUEUEKEEPER_DIAGNOSTIC_REPORTS", 'QUEUEKEEPER_DEVICE_LOG_WATCH', offload_host.SCROLL_BARS_RECORDING,
     offload_host.HEALTH_RECORDING, "QUEUEKEEPER_EVIDENCE_RETRY", cli.REAP_SWITCH, offload_host.PINS_DIRECTORY, 'QUEUEKEEPER_QUIT_OPENED_APPS', 'QUEUEKEEPER_DEVICE_UPKEEP',
     'QUEUEKEEPER_OWNER_NOTICE', TOLD,
