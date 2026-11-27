@@ -9095,6 +9095,71 @@ class SharedCheckout(Fixture):
         self.assertIn(f"fast-forwarded {self.repo} from {before[:12]} to {main[:12]}", said)
         self.assertTrue((self.repo / "landed-1").is_file())
 
+    def test_session_worktrees_in_a_folder_it_does_not_ignore_do_not_hold_it_back(self):
+        """vocaro/queuekeeper#159: the Claude app keeps a project's session worktrees in its main checkout's
+        .claude/worktrees/. Where that folder is not ignored, Git lists it as untracked, which held the checkout back
+        as uncommitted work for as long as any session ran. The fast-forward passes over it and leaves each worktree,
+        its HEAD, its own changes and a process running in it, as they were; anything else untracked in .claude/
+        still holds it back."""
+        nested = self.repo / ".claude/worktrees/session-a"
+        run(self.repo, "git", "worktree", "add", "-q", "-b", "session-a", str(nested), "origin/main")
+        other = self.repo / ".claude/worktrees/session-b"
+        run(self.repo, "git", "worktree", "add", "-q", "--detach", str(other), "origin/main")
+        (nested / "AGENTS.md").write_text("the session's own edit\n")
+        (nested / "draft.txt").write_text("the session's own file\n")
+        session_head = run(nested, "git", "rev-parse", "HEAD")
+        self.held(["sleep", "300"], nested)
+        self.assertIn("?? .claude/", run(self.repo, "git", "status", "--porcelain", "--untracked-files=normal"))
+        before, after, main, said = self.land()
+        self.assertNotEqual(before, main)
+        self.assertEqual(after, main)
+        self.assertIn(f"fast-forwarded {self.repo} from {before[:12]} to {main[:12]}", said)
+        self.assertEqual(run(nested, "git", "rev-parse", "HEAD"), session_head)
+        self.assertEqual(run(nested, "git", "symbolic-ref", "--short", "HEAD"), "session-a")
+        self.assertEqual((nested / "AGENTS.md").read_text(), "the session's own edit\n")
+        self.assertEqual((nested / "draft.txt").read_text(), "the session's own file\n")
+        self.assertFalse((nested / "landed-1").exists())
+        self.assertTrue(other.is_dir())
+        self.assertIsNone(self.reported()[0])
+        # The negative control: a file of the checkout's own beside the worktrees still holds it back, and is named.
+        (self.repo / ".claude/notes.md").write_text("{}\n")
+        before, after, main, said = self.land()
+        self.assertEqual(after, before)
+        self.assertIn(f"left {self.repo} as it is: it has 1 changed or untracked path(s), such as "
+                      ".claude/notes.md", said)
+        record = self.reported()[0]
+        self.assertEqual((record["cause"], record["paths"]), ("changes", [".claude/notes.md"]))
+
+    def test_a_projects_queue_that_does_not_follow_reports_its_main_checkout_left_behind(self):
+        """vocaro/queuekeeper#159: on 2026-11-26 FlexolioLib's main checkout, on main and clean, stayed 6 commits behind
+        origin/main over five landings, so each session the app cut from it began behind, and status said nothing. Its
+        queue does not follow (no queue.followLandings), and only follow wrote the record. Status and doctor now say it
+        is behind, why and how to have it followed, and stop once it is at origin/main."""
+        with patch.object(mq, "TOOLKIT_ROOT", ROOT):
+            before, after, main, said = self.land()
+            self.assertEqual(after, before)
+            self.assertNotIn("fast-forwarded", said)
+            record, words, doctored, _ = self.reported()
+            self.assertEqual((record["cause"], record["behind"], record["landings"]), ("unfollowed", 1, 1))
+            self.assertIn(f"the main checkout {self.repo} is 1 commit behind origin/main, left as it is for ", words)
+            self.assertIn(f"over 1 landing: {mq.UNFOLLOWED}", words)
+            self.assertIn(f"  next: `git -C {self.repo} merge --ff-only origin/main` moves it now; to have each "
+                          "landing fast-forward it, set `\"queue\": {\"followLandings\": true}`", words)
+            # A note for doctor, not a finding: the project chose not to follow.
+            self.assertEqual([found for found in doctored["findings"] if found["signal"] == "shared checkout behind"],
+                             [])
+            self.assertTrue(any(mq.UNFOLLOWED in hint and "followLandings\": true" in hint
+                                for hint in doctored["hints"]))
+            since = record["since"]
+            self.land()
+            record = self.reported()[0]
+            self.assertEqual((record["landings"], record["since"]), (2, since))
+            # Moved by hand, it is no longer reported; off main, a landing removes the record.
+            run(self.repo, "git", "merge", "-q", "--ff-only", "origin/main")
+            self.assertIsNone(self.reported()[0])
+            self.land(lambda: run(self.repo, "git", "checkout", "-q", "-B", "elsewhere", "origin/main"))
+            self.assertIsNone(mq.Queue(self.repo).left_record())
+
     def test_a_shared_checkout_that_is_not_plainly_behind_is_left_as_it_is(self):
         def edit(): (self.repo / "AGENTS.md").write_text("a session's edit\n")
         def untracked(): (self.repo / "notes.txt").write_text("a session's file\n")

@@ -238,6 +238,10 @@ SHOWN_USERS = 5
 # (vocaro/queuekeeper#357). How many of its changed or untracked paths they name.
 LEFT_FILE = "shared-checkout.json"
 SHOWN_PATHS = 3
+# Where the Claude app keeps a project's session worktrees, inside its main checkout (Worker.stays, changed_paths).
+SESSION_WORKTREES = ".claude/worktrees"
+# Why a queue that does not follow left its main checkout behind (Worker.unfollowed).
+UNFOLLOWED = "this queue does not fast-forward it after a landing: its main does not set queue.followLandings"
 # The causes of a checkout left behind that follow itself settles once the runs from it end (left_next); any other is
 # a person's to settle.
 LEFT_BY_ITSELF = ("running", "unknown")
@@ -2159,8 +2163,7 @@ class Queue:
             if behind == 0: return None
             record["behind"] = behind
             if record.get("cause") == "changes":
-                listed = git(checkout, "status", "--porcelain", "--untracked-files=normal", check=True)
-                changed = [line[3:] for line in listed.stdout.splitlines()]
+                changed = [line[3:] for line in changed_paths(checkout)]
                 record.update(changed=len(changed), paths=changed[:SHOWN_PATHS])
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError): pass
         record["words"], record["next"] = left_words(record), left_next(record)
@@ -3233,6 +3236,21 @@ def described_holders(users):
     return found + ([{"more": len(users) - SHOWN_USERS}] if len(users) > SHOWN_USERS else [])
 
 
+def changed_paths(checkout):
+    """The checkout's changed and untracked paths, as `git status --porcelain` lines, but for the sessions' worktrees
+    under its SESSION_WORKTREES. A worktree there is a session's own, which a fast-forward of the checkout never
+    touches, and one whose folder is not ignored would otherwise be an untracked path that holds the checkout back as
+    long as any session runs (vocaro/queuekeeper#159). Git does not descend into a nested worktree, and names a folder
+    that holds only such worktrees as one untracked folder, so those are listed path by path and then dropped."""
+    listed = git(checkout, "status", "--porcelain", "--untracked-files=normal", check=True).stdout.splitlines()
+    if not any(line.startswith("?? ") and (SESSION_WORKTREES + "/").startswith(line[3:].rstrip("/") + "/")
+               for line in listed):
+        return listed
+    listed = git(checkout, "status", "--porcelain", "--untracked-files=all", check=True).stdout.splitlines()
+    return [line for line in listed
+            if not (line.startswith("?? ") and (line[3:].rstrip("/") + "/").startswith(SESSION_WORKTREES + "/"))]
+
+
 def left_words(record, at=None):
     """The shared checkout follow left behind origin/main, by its record (Queue.left_behind), in words: where it is, how
     many commits behind, for how long, over how many landings, and why: for uncommitted changes, which paths."""
@@ -3248,7 +3266,8 @@ def left_words(record, at=None):
                + ", ".join(paths) + (f", and {changed - len(paths)} more" if changed > len(paths) else "")) \
             if changed else "the uncommitted changes that held it are gone"
     else: why = record.get("reason") or "for a reason not recorded"
-    return f"the shared checkout {record.get('checkout')} is {far}{when}: {why}"
+    which = "main checkout" if record.get("cause") == "unfollowed" else "shared checkout"
+    return f"the {which} {record.get('checkout')} is {far}{when}: {why}"
 
 
 def left_next(record):
@@ -3265,6 +3284,9 @@ def left_next(record):
                 "next landing then fast-forwards it")
     if cause == "commits":
         return "land those commits through the queue from a branch; the next landing then moves it past them"
+    if cause == "unfollowed":
+        return (f"`git -C {checkout} merge --ff-only origin/main` moves it now; to have each landing fast-forward it, "
+                'set `"queue": {"followLandings": true}` in queuekeeper.json and land that through the queue')
     if cause in LEFT_BY_ITSELF:
         return ("nothing: the worker tries again while nothing waits and at each landing, so it follows once those "
                 "runs end")
@@ -3698,6 +3720,7 @@ def left_findings(root, named=False):
     except Exception: return [], []  # noqa: BLE001 - a reading never fails the doctor
     if not record: return [], []
     if record.get("cause") in LEFT_BY_ITSELF: return [], [] if named else [record["words"]]
+    if record.get("cause") == "unfollowed": return [], [f"{record['words']}; next: {record['next']}"]
     return [{"signal": "shared checkout behind", "diagnosis": record["words"], "remedy": record["next"],
              "checkout": record.get("checkout"), "behind": record.get("behind"), "cause": record.get("cause"),
              "paths": record.get("paths") or []}], []
@@ -4919,6 +4942,27 @@ class Worker:
             self.say(f"left {shared} as it is: {why}" + ("; tried again once nothing waits" if self.deferred else ""))
         self.record_left(shared, why, landing=not quiet)
 
+    def unfollowed(self):
+        """After a landing in a queue that does not follow (follows), record its main checkout as left behind when it
+        is on main and behind origin/main, and remove the record otherwise. Nothing moves it, so a session the Claude
+        app cuts from its main begins behind; status and doctor say so and how to have it followed. On 2026-11-26
+        FlexolioLib's checkout stayed 6 commits behind over five landings while status said nothing, since only follow
+        wrote the record (vocaro/queuekeeper#159)."""
+        shared = self.queue.main_checkout
+        try:
+            on_main = git(shared, "symbolic-ref", "--short", "-q", "HEAD").stdout.strip() == "main"
+            behind = int(text(shared, "rev-list", "--count", f"HEAD..{MAIN}")) if on_main else 0
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError): return
+        if not behind:
+            self.queue.note_left(None)
+            return
+        before, now = self.queue.left_record() or {}, time.time()
+        if before.get("cause") != "unfollowed": before = {}
+        self.queue.note_left({
+            "checkout": str(shared), "cause": "unfollowed", "reason": UNFOLLOWED, "behind": behind,
+            "since": before["since"] if isinstance(before.get("since"), (int, float)) else now,
+            "landings": int(before.get("landings") or 0) + 1, "updated": now})
+
     def record_left(self, shared, why, landing):
         """Record why follow left the shared checkout behind origin/main, for `qk queue status` and `qk queue doctor`
         (Queue.left_behind): its cause, the reason in words, its changed paths, how many commits behind it is, since
@@ -4942,7 +4986,7 @@ class Worker:
         """Why the shared checkout is not fast-forwarded now, '' when it is current, or None."""
         branch = git(shared, "symbolic-ref", "--short", "-q", "HEAD").stdout.strip()
         if branch != "main": return f"it is on {branch or 'a detached HEAD'}, not main"
-        changed = git(shared, "status", "--porcelain", "--untracked-files=normal", check=True).stdout.splitlines()
+        changed = changed_paths(shared)
         if changed:
             self.changed = [line[3:] for line in changed]
             return f"it has {len(changed)} changed or untracked path(s), such as {changed[0][3:]}"
@@ -4958,7 +5002,7 @@ class Worker:
         # been removed holds nothing back (vocaro/queuekeeper#159).
         listed = text(shared, "worktree", "list", "--porcelain").splitlines()
         apart = [Path(line[len("worktree "):]) for line in listed[1:] if line.startswith("worktree ")]
-        apart += [Path(shared) / ".claude" / "worktrees", Path(text(shared, "rev-parse", "--path-format=absolute", "--git-common-dir"))]
+        apart += [Path(shared) / SESSION_WORKTREES, Path(text(shared, "rev-parse", "--path-format=absolute", "--git-common-dir"))]
         try: users = disk.runners(disk.census(), shared, apart, placed=loads_from_working_directory)
         except (OSError, RuntimeError, subprocess.SubprocessError) as error:
             return f"{UNKNOWN_USE}: {error}"
@@ -6105,6 +6149,7 @@ class Worker:
                               **({} if docs or ungated else {"gatedOn": gated_on}))
         if not docs and not ungated: self.keep_app(head)
         if self.follows(): self.follow()
+        else: self.unfollowed()
 
     def landed_attempt(self, attempts):
         """The newest of attempts, a push's {head, base, at}, whose head origin/main holds as last fetched: a push

@@ -382,7 +382,12 @@ or finds it not behind, removes the record. `Queue.left_behind` reads the record
 `qk queue status` (its `sharedCheckout` field) and `qk queue doctor`, counting the commits and the
 changed paths again and dropping a record whose checkout has since reached `origin/main`, as after
 a fast-forward by hand. Doctor reports a checkout a person must settle as a finding and one held
-only by running processes as a note (vocaro/queuekeeper#357). Nothing here holds the queue, and
+only by running processes as a note (vocaro/queuekeeper#357). The clean check (`changed_paths`)
+drops untracked session worktrees under `.claude/worktrees/`, which Git lists where that folder is
+not ignored. A project's queue that does not follow (no `queue.followLandings`) never runs the
+follow, so after each landing `Worker.unfollowed` writes the same record with cause `unfollowed`
+while its main checkout is on `main` and behind, and removes it otherwise; doctor gives it as a
+note (vocaro/queuekeeper#159). Nothing here holds the queue, and
 none of it keeps the queue from reading idle: while `Worker.catch_up` retries, the round's account marks `catchingUp`, and `reading` counts a live worker
 so marked as idle when no entry waits, since nothing is left to test or push and the holder can be
 another project's worker for as long as its gates take (vocaro/queuekeeper#285).
