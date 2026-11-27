@@ -11642,6 +11642,24 @@ class SummaryFacts(Fixture):
                       "9831 passed, 0 failed", why)
         self.assertNotIn("qk unittest summary", why)
 
+    def test_a_gate_whose_qk_run_a_signal_ends_gives_no_verdict_and_runs_again(self):
+        # vocaro/queuekeeper#373: a gate at a one-minute load of 930 gave the test above's entry the why of a log with
+        # no summary at all, as a qk run that a signal ends leaves, and sent it back. Here the first run's lane stops
+        # its qk run as such a signal would; the queue runs the gate again, and the second run's summary is read.
+        signaled = self.base / "signaled"
+        lane = ("import os, pathlib, signal, sys, time\n"
+                "print('Executed 9831 tests, with 0 failures (0 unexpected) in 100.0 (100.1) seconds', flush=True)\n"
+                f"signaled = pathlib.Path({str(signaled)!r})\n"
+                "if not signaled.exists():\n"
+                "    signaled.touch()\n"
+                "    os.kill(os.getppid(), signal.SIGTERM)\n"
+                "    time.sleep(60)\n"
+                "sys.exit(65)\n")
+        why = self.rejected("", "lane.py", lane, status=0)
+        self.assertTrue(signaled.exists())
+        self.assertIn("Which tests failed could not be determined (gate's summary names no failed test; its tests: "
+                      "9831 passed, 0 failed", why)
+
     def test_placed_file_takes_a_bare_name_a_path_or_an_absolute_path_and_never_guesses(self):
         files = {"Tests/A/Cells.swift", "Tests/B/Ranges.swift", "Tests/B/Twice.swift", "Tests/C/Twice.swift"}
         for path, expected in (("Cells.swift", "Tests/A/Cells.swift"), ("A/Cells.swift", "Tests/A/Cells.swift"),

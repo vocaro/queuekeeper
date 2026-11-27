@@ -4451,7 +4451,7 @@ class Worker:
         self.deferred = None  # why follow last left the shared checkout behind for a run from it, or None
         self.holders = []  # the (process, how, path) that stays last found running from the shared checkout
         self.left = None  # why follow last left the shared checkout as it is, for any reason, or None
-        self.timed_out = None  # why the last gate's lane reached its limit, or None (gate)
+        self.timed_out = None  # why the last gate's lane reached its limit or a signal ended its qk run, or None (gate)
         self.failed_dispatch = None  # the last failed gate log and its dispatch evidence (gate)
         self.failed_toolkit = None
         self.ran_on = None  # another Mac that ran the last lane the gate ran, or None (gate)
@@ -5440,6 +5440,16 @@ class Worker:
                 raise
             loads.stopped.set()
             ended = time.monotonic()
+            if status_ < 0:
+                # qk run ends each lane it runs with its summary, even one it is told to stop. One a signal ended
+                # before that, as SIGKILL or a stop it forwards does, judged nothing, and its log names no test: a
+                # verdict there sent an entry back for no failure of its own (vocaro/queuekeeper#373).
+                name = next((each.name for each in signal.Signals if each == -status_), f"signal {-status_}")
+                stopped = f"qk run {lane} ended by {name} before its summary"
+                with contextlib.suppress(OSError), log.open("a") as kept: kept.write(f"\nqueuekeeper: {stopped}\n")
+                self.timed_out = f"{stopped}, so it gave no verdict"
+                self.say(f"{lane}: unmeasured: {stopped}")
+                status_ = lane_results.UNMEASURED
             ran, self.ran_on = remote.dispatch(self.checkout, lane, began)
             if (remote.GATE_OFFER_HOSTS in placed and status_ in (2, lane_results.TOOL_NOT_STARTED)
                     and ran is None and not self.mac(lane, began)):
