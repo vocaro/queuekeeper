@@ -512,6 +512,40 @@ class HolderActivityTests(Namespace):
         with patch.object(os, "getcwd", return_value="/" + "x" * 2000):
             self.assertEqual(resources.work_place({}), {})
 
+    def logged(self, label, *helds, outcome="released", name=resources.LOG):
+        """An `ended` line in the namespace's admission log for each of helds, as Admission writes it."""
+        self.directory.mkdir(parents=True, exist_ok=True)
+        with (self.directory / name).open("a") as stream:
+            for held in helds:
+                stream.write(json.dumps({"time": datetime.now(timezone.utc).isoformat(), "event": "ended",
+                                         "identity": f"i{held}", "pid": 1, "kind": "heavy", "label": label,
+                                         "outcome": outcome, "slots": [0], "held": held}) + "\n")
+
+    def test_a_holder_s_quiet_bound_is_measured_from_its_lanes_own_past_holds(self):
+        """vocaro/queuekeeper#70: the reading carries what this Mac's admission log says of the lane's own past holds,
+        for queue doctor's note: QUIET_MARGIN times the longest of its latest QUIET_HOLDS released holds, once
+        QUIET_HOLDS_NEEDED are logged, from both generations of the log, and nothing from holds that did not end
+        released or are another lane's."""
+        directory = str(self.work)
+        self.assertEqual(self.holder(directory=directory)["quietBound"],
+                         {"holds": 0, "longestSeconds": None, "needed": 5, "seconds": None})
+        self.logged("Alpha unittest", 3000.0, name=resources.PREVIOUS_LOG)
+        self.logged("Alpha unittest", 2800.0, 2900.0)
+        self.logged("Alpha unittest", 9000.0, outcome="timed-out")
+        self.logged("Beta unittest", 9000.0)
+        self.assertEqual(self.holder(directory=directory)["quietBound"],
+                         {"holds": 3, "longestSeconds": 3000.0, "needed": 5, "seconds": None})
+        self.logged("Alpha unittest", 2500.0, 2600.0)
+        self.assertEqual(self.holder(directory=directory)["quietBound"], {"holds": 5, "longestSeconds": 3000.0, "needed": 5, "seconds": 4500.0})
+        # Only the latest QUIET_HOLDS count, so a long hold ages out.
+        self.logged("Alpha unittest", *[100.0] * offload_host.QUIET_HOLDS)
+        self.assertEqual(self.holder(directory=directory)["quietBound"]["seconds"], 150.0)
+        # A holder whose files are not read carries none.
+        self.assertIsNone(self.holder()["quietBound"])
+        with patch.object(Path, "open", side_effect=PermissionError("denied")):
+            self.assertIsNone(offload_host.past_holds({"Alpha unittest"}))
+        self.assertIsNone(offload_host.quiet_bound(None))
+
     def test_the_paths_it_reads_are_run_progress_s(self):
         """offload_host imports nothing of the toolkit, so it keeps its own copy of where runs write."""
         self.assertEqual((offload_host.HOLDER_RUNS, offload_host.HOLDER_LANES, offload_host.HOLDER_LANE_LOGS),
