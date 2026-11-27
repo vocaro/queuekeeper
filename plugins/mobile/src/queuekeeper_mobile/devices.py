@@ -1072,15 +1072,18 @@ def overdue_silences(entries, at=None):
     return found
 
 
-def status(record, macs=None):
+def status(record, macs=None, owner=None):
     """Print every entry's condition (reservations.status), then each device's declaration and what each Mac reads of
-    it now: this Mac's and macs', (name, SSH destination) pairs, by default the farm's."""
+    it now: this Mac's and macs', (name, SSH destination) pairs, by default the farm's. Given owner, the entries and
+    overdue silencings are only those owner holds (reservations.held_by)."""
     macs = reach.farm_macs() if macs is None else macs
     # What is due by itself first, so that the entries below show what it did (upkeep).
     from . import upkeep
     for line in upkeep.upkeep(record): print(f"Put right: {line.removeprefix('devices: ')}")
-    value = reservations.status(record, _describe)
-    for line in overdue_silences(value["devices"]): print(f"Overdue silencing: {line}")
+    value = reservations.status(record, _describe, owner=owner)
+    held = value["devices"] if owner is None else \
+        {key: entry for key, entry in value["devices"].items() if reservations.held_by(entry, owner)}
+    for line in overdue_silences(held): print(f"Overdue silencing: {line}")
     # Which Macs reach each device, and how, as each lists it now, beside what the owner declared (reach.py).
     found = reach.readings(macs=macs)
     names = [reach.mac_here(), *(name for name, _host in macs)]
@@ -1182,7 +1185,7 @@ def main(argv=None):
     try:
         record = Record()
         if args.action == "status":
-            status(record)
+            status(record, owner=reservations.status_owner(args))
         elif args.action == "declare":
             if args.clear and (args.reach or args.cable_on or args.absent):
                 raise ValueError("--clear removes the declaration, and takes no --reach, --cable-on or --absent")

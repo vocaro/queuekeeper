@@ -59,6 +59,19 @@ class ForegroundCommandTests(unittest.TestCase):
         self.assertIn(f"Device record {self.path}", printed[0])
         self.assertTrue(any(line.startswith(f"{reservations.FOREGROUND}: free") for line in printed), printed)
 
+    def test_status_filters_by_owner(self):
+        # vocaro/queuekeeper#372, in a project with no device plugin.
+        code, _output, error = self.cli("reserve", reservations.FOREGROUND, "--owner", "session-a", "--revision", "0",
+                                        "--purpose", "attended Unity play mode test", "--release-by", later())
+        self.assertEqual(code, 0, error)
+        self.assertIn(f"{reservations.FOREGROUND}: held; owner session-a",
+                      self.cli("status", "--owner", "session-a")[1])
+        with patch.dict(os.environ, {reservations.OWNER: "session-a"}):
+            self.assertIn(f"{reservations.FOREGROUND}: held; owner session-a", self.cli("status", "--mine")[1])
+        output = self.cli("status", "--owner", "session-b")[1]
+        self.assertNotIn(f"{reservations.FOREGROUND}:", output)
+        self.assertIn("session-b holds no reservation in this record", output)
+
     def test_the_foreground_is_reserved_checked_and_released(self):
         code, output, error = self.cli("reserve", reservations.FOREGROUND, "--owner", "session-a", "--revision", "0",
                                        "--purpose", "attended Unity play mode test", "--release-by", later())

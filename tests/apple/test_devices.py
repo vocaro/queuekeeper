@@ -1008,6 +1008,69 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertNotIn("launchedApps", taken)
         self.assertEqual(taken["previousLease"]["launchedApps"], ["com.example.Host"])
 
+    def owned(self):
+        """session-a holds the iPhone and the foreground, session-b the iPad; session-c released the Duo."""
+        self.reserve("iPhone", device=PHONE)
+        self.foreground()
+        self.reserve("iPad", owner="session-b", device=TABLET)
+        duo = self.reserve("Duo", owner="session-c")
+        self.record.release("Duo", owner="session-c", revision=duo["revision"], outcome="o", restoration="r")
+
+    def test_status_without_an_owner_lists_every_entry(self):
+        self.owned()
+        code, output, error = self.cli("status")
+        self.assertEqual(code, 0, error)
+        for line in ("iPhone: held; owner session-a", f"{devices.FOREGROUND}: held; owner session-a",
+                     "iPad: held; owner session-b", "Duo: released; last owner session-c"):
+            self.assertIn(line, output)
+        self.assertNotIn("holds no reservation", output)
+
+    def test_status_owner_lists_only_what_that_owner_holds(self):
+        # vocaro/queuekeeper#372: Closeout finds a session's reservations without reading every line.
+        self.owned()
+        code, output, error = self.cli("status", "--owner", "session-b")
+        self.assertEqual(code, 0, error)
+        self.assertIn("Device record", output)
+        self.assertIn("iPad: held; owner session-b", output)
+        self.assertNotIn("session-a", output)
+        self.assertNotIn(f"{devices.FOREGROUND}: ", output)
+        self.assertNotIn("Duo: released", output)
+        # A released entry is held by no one, though it names its last owner.
+        output = self.cli("status", "--owner", "session-c")[1]
+        self.assertNotIn("Duo: released", output)
+        self.assertIn("session-c holds no reservation in this record", output)
+
+    def test_status_mine_lists_what_the_default_owner_holds(self):
+        self.owned()
+        with patch.dict(os.environ, {devices.OWNER: "session-a"}):
+            code, output, error = self.cli("status", "--mine")
+        self.assertEqual(code, 0, error)
+        self.assertIn("iPhone: held; owner session-a", output)
+        self.assertIn(f"{devices.FOREGROUND}: held; owner session-a", output)
+        self.assertNotIn("iPad: held", output)
+        self.assertNotIn("Duo: released", output)
+        # Without $QUEUEKEEPER_DEVICE_OWNER it is the agent session's, as `simulator-pool release --mine` resolves it.
+        with patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "session-b", "CODEX_THREAD_ID": ""}):
+            output = self.cli("status", "--mine")[1]
+        self.assertIn("iPad: held; owner session-b", output)
+        self.assertNotIn("iPhone: held", output)
+
+    def test_status_owner_with_no_match_says_so(self):
+        self.owned()
+        code, output, error = self.cli("status", "--owner", "session-z")
+        self.assertEqual(code, 0, error)
+        self.assertIn("session-z holds no reservation in this record", output)
+        for key in ("iPhone: held", "iPad: held", "Duo: released", f"{devices.FOREGROUND}: "):
+            self.assertNotIn(key, output)
+
+    def test_status_mine_with_no_default_owner_and_both_filters_are_refused(self):
+        with patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "", "CODEX_THREAD_ID": ""}):
+            code, _output, error = self.cli("status", "--mine")
+        self.assertEqual(code, 2)
+        self.assertIn("name it with --owner", error)
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(StringIO()):
+            devices.main(["status", "--mine", "--owner", "session-a"])
+
 
 class BoundedRunTests(unittest.TestCase):
     def setUp(self):
