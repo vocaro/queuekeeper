@@ -20,7 +20,7 @@ from queuekeeper import cli, pull_requests
 FAKE_GH = """#!/bin/sh
 printf '%s\\n' "$*" >> "$FAKE_GH_LOG"
 case "$1 $2" in
-  "pr view") cat "$FAKE_GH_PR" ;;
+  "pr view"|"pr list") cat "$FAKE_GH_PR" ;;
   "api --method") exit "${FAKE_GH_POST_STATUS:-0}" ;;
   *) echo "fake gh: unexpected $*" >&2; exit 1 ;;
 esac
@@ -215,6 +215,15 @@ class PullRequestCheck(unittest.TestCase):
                 self.assertIn(said, why)
         self.request.write_text("not json")
         self.assertIsNone(pull_requests.recheck(self.project, request, self.head)[0])
+
+    def test_the_labeled_pull_requests_on_main_are_listed_less_drafts(self):
+        self.request.write_text(json.dumps([
+            {"number": 7, "headRefOid": "a" * 40, "headRefName": "one", "title": "One", "url": "u7", "isDraft": False},
+            {"number": 8, "headRefOid": "b" * 40, "headRefName": "two", "title": "Two", "url": "u8", "isDraft": True}]))
+        self.assertEqual(pull_requests.labeled(self.project, "queue"),
+                         [{"number": 7, "head": "a" * 40, "title": "One", "headRefName": "one", "url": "u7",
+                           "label": "queue"}])
+        self.assertIn("pr list --state open --base main --label queue", self.log.read_text())
 
     def test_a_head_origin_does_not_have_says_to_check_again(self):
         self.pull_request(headRefOid="0" * 40)

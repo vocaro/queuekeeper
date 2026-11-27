@@ -209,7 +209,8 @@ ahead of it, batches and bisects as it does for `qk land`, and merges what passe
 ```
 
 - **Approval is a label.** When you have reviewed a pull request, add the label, `queue` unless
-  `pullRequests.label` names another, then queue it with `qk land --pr NUMBER`. A label works
+  `pullRequests.label` names another. The queue picks it up by itself (below), or
+  `qk land --pr NUMBER` queues it at once. A label works
   where a GitHub review cannot: when agents push with your own account, you are the author, and
   GitHub does not let an author approve their own pull request. `qk land --pr` refuses a pull
   request that is closed, a draft, not based on `main`, or not labeled.
@@ -232,8 +233,14 @@ ahead of it, batches and bisects as it does for `qk land`, and merges what passe
   while it waited is taken out, with the reason in `removedWhy`, and the rest are gated again
   without it. While `gh` cannot answer, the queue holds and pushes nothing.
 
-The queue does not yet queue labeled pull requests by itself: run `qk land --pr` after adding
-the label, and again after a push.
+- **Labeled pull requests are queued by themselves.** Each look of the
+  [queue launcher](#keep-the-queue-running), every two minutes, and the worker after each round,
+  ask GitHub for open pull requests on `main` that carry the label, and queue each one not yet
+  queued at its head. A push to a labeled pull request queues its new head in place of the old.
+  One refused at a head, such as one holding a merge, is not tried again until it is pushed.
+  Without the launcher, run `qk pr queue` for the same look, or `qk land --pr NUMBER`.
+- **Taking the label off is how to stop one.** `qk queue remove ID` takes out an entry, but the
+  next look queues a labeled pull request again.
 
 ### Tell your agents
 
