@@ -17,7 +17,7 @@ the owner's Macs, not a hosted runner, run its checks. This command is that chec
 - A head that conflicts with its base fails every lane's status, since nothing that would land can be tested.
 
 Statuses are posted on the commit tested, so a push after the check started leaves the new head with no status of
-this run's. Each pull request's check runs once at a time: a second run while one runs exits 75, as a held command
+this run's. The kept checkout of a pull request that is merged or closed is removed at the next check (dispose). Each pull request's check runs once at a time: a second run while one runs exits 75, as a held command
 does."""
 import argparse
 import fcntl
@@ -186,6 +186,34 @@ def checkout_for(root, number):
     return path
 
 
+def dispose(root, keep=None):
+    """Remove the kept checkout, and its lock, of each pull request GitHub no longer lists as open: merged or closed
+    (vocaro/queuekeeper#393). Its build output and the check's logs go with it, as the user guide says. keep, the pull
+    request being checked, stays, as does a checkout whose check is running. Nothing goes while gh cannot list the open
+    pull requests. Returns the numbers removed."""
+    folder = common_dir(root) / FOLDER
+    kept = sorted(path for path in folder.iterdir() if path.is_dir() and path.name.isdigit()) if folder.is_dir() else []
+    kept = [path for path in kept if int(path.name) != keep]
+    if not kept: return []
+    status, out, _ = run(["gh", "pr", "list", "--state", "open", "--limit", "1000", "--json", "number"], root)
+    try: open_ = {item["number"] for item in json.loads(out)} if not status else None
+    except (ValueError, TypeError, KeyError): open_ = None
+    if open_ is None: return []
+    removed = []
+    for path in kept:
+        if int(path.name) in open_: continue
+        with open(folder / f"{path.name}.lock", "w") as lock:
+            try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError: continue
+            if git(root, "worktree", "remove", "--force", str(path))[0]: continue
+        (folder / f"{path.name}.lock").unlink(missing_ok=True)
+        removed.append(int(path.name))
+    if removed:
+        say(f"removed the kept checkout of pull request{'s' if len(removed) > 1 else ''} "
+            f"{', '.join(map(str, removed))}, no longer open")
+    return removed
+
+
 def merged(root, checkout, request):
     """The merge of the pull request's head into its base, checked out in checkout: (commit, None), or (None, why
     it conflicts). Raises ValueError when the commits cannot be fetched."""
@@ -240,6 +268,7 @@ def check(root, number, named):
     if request.get("state") not in (None, "OPEN"):
         say(f"pull request {number} is {request['state'].lower()}, so nothing is checked")
         return 0
+    dispose(root, keep=number)
     checkout = checkout_for(root, number)
     with open(checkout.parent / f"{number}.lock", "w") as lock:
         try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

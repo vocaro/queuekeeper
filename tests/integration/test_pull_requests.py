@@ -148,6 +148,34 @@ class PullRequestCheck(unittest.TestCase):
             / pull_requests.FOLDER / "7"
         self.assertEqual(self.git(checkout, "status", "--porcelain"), "")
 
+    def test_the_kept_checkout_of_a_merged_or_closed_pull_request_is_removed(self):
+        """At the next check, of another pull request, once GitHub no longer lists it as open (vocaro/queuekeeper#393)."""
+        with self.lane(0): self.qk("7")
+        folder = Path(self.git(self.project, "rev-parse", "--path-format=absolute", "--git-common-dir")) \
+            / pull_requests.FOLDER
+        self.assertTrue((folder / "7").is_dir())
+        # Still open: kept. gh unable to list: kept.
+        self.request.write_text(json.dumps([{"number": 7}]))
+        self.assertEqual(pull_requests.dispose(self.project), [])
+        self.request.write_text("not json")
+        self.assertEqual(pull_requests.dispose(self.project), [])
+        # While its check runs: kept.
+        self.request.write_text(json.dumps([]))
+        with open(folder / "7.lock", "w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            self.assertEqual(pull_requests.dispose(self.project), [])
+        # Merged or closed, and checked while another is: removed, worktree and lock both.
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(pull_requests.dispose(self.project, keep=8), [7])
+        self.assertFalse((folder / "7").exists())
+        self.assertFalse((folder / "7.lock").exists())
+        self.assertNotIn(str(folder / "7"), self.git(self.project, "worktree", "list"))
+        # The pull request being checked is never removed, open or not.
+        self.pull_request()
+        with self.lane(0): self.qk("7")
+        self.request.write_text(json.dumps([]))
+        self.assertEqual(pull_requests.dispose(self.project, keep=7), [])
+
     def test_the_kept_checkout_is_reused_and_cleaned_between_checks(self):
         with self.lane(0): self.qk("7")
         checkout = Path(self.git(self.project, "rev-parse", "--path-format=absolute", "--git-common-dir")) \

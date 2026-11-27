@@ -255,7 +255,7 @@ def push_targets_main(arguments, directory, branch):
     if not refspecs:
         # Where a bare push goes: the current branch's push destination, which upstream tracking can make main.
         if branch == MAIN: return True
-        pushed = git(directory, "rev-parse", "--symbolic-full-name", "@{push}") or ""
+        pushed = git(directory, "rev-parse", "--symbolic-full-name", f"{branch}@{{push}}" if branch else "@{push}") or ""
         return pushed.rsplit("/", 1)[-1] == MAIN and pushed.startswith("refs/remotes/")
     for spec in refspecs:
         destination = spec.rsplit(":", 1)[1] if ":" in spec else spec
@@ -311,8 +311,50 @@ def pull_fast_forwards_to_remote_main(arguments, directory):
     return all(is_main(spec.split(":", 1)[0]) and ":" not in spec for spec in refspecs)
 
 
-def git_refusal(words, directory):
-    """Why the git command words, run in directory, lands on main by hand, or None."""
+# What an earlier `git switch` or `git checkout` in the same command left checked out, when it is not a branch:
+# a detached HEAD, or a branch the guard cannot read from the words (switched_to).
+DETACHED, UNREAD = object(), object()
+SWITCH_VALUED = {"-c", "-C", "--create", "--force-create", "--orphan", "-t", "--track", "--conflict"}
+CHECKOUT_VALUED = {"-b", "-B", "--orphan", "-t", "--track", "--conflict"}
+
+
+def switched_to(action, arguments, directory):
+    """What `git switch|checkout ARGUMENTS` in directory leaves checked out: a branch's name, DETACHED, UNREAD, or None
+    when it changes no branch, as a checkout of paths does (vocaro/queuekeeper#390)."""
+    # Short options run together, as -qc NAME is -q -c NAME.
+    arguments = [part for word in arguments for part in
+                 ([f"-{letter}" for letter in word[1:]] if re.fullmatch(r"-[A-Za-z]{2,}", word) else [word])]
+    created = next((arguments[index + 1] for index, word in enumerate(arguments[:-1])
+                    if word in ({"-c", "-C", "--create", "--force-create", "--orphan"} if action == "switch"
+                                else {"-b", "-B", "--orphan"})), None)
+    created = created or next((word.split("=", 1)[1] for word in arguments
+                               if word.startswith(("--create=", "--force-create=", "--orphan="))), None)
+    if created: return created
+    if "--detach" in arguments or (action == "switch" and "-d" in arguments): return DETACHED
+    if action == "checkout" and "--" in arguments: return None
+    valued = SWITCH_VALUED if action == "switch" else CHECKOUT_VALUED
+    positional, skip = [], False
+    for word in arguments:
+        if skip: skip = False
+        elif word in valued: skip = True
+        elif word == "-" or not word.startswith("-"): positional.append(word)
+    if not positional: return None if action == "checkout" else UNREAD
+    target = positional[0]
+    if target == "-": return git(directory, "rev-parse", "--abbrev-ref", "@{-1}") or UNREAD
+    if git(directory, "rev-parse", "--verify", "-q", f"refs/heads/{target}"): return target
+    # A remote's branch of that name, which both commands check out as a new local branch.
+    if any(ref.endswith(f"/{target}") for ref in (git(directory, "for-each-ref", "--format=%(refname)",
+                                                        "refs/remotes") or "").split()):
+        return target
+    if git(directory, "rev-parse", "--verify", "-q", f"{target}^{{commit}}"): return DETACHED
+    return None if action == "checkout" else UNREAD
+
+
+def git_refusal(words, directory, switched=None):
+    """Why the git command words, run in directory, lands on main by hand, or None. switched holds, by directory, what
+    an earlier `git switch` or `git checkout` of the same command checked out there (switched_to), which this updates:
+    a push or merge after it is judged by that branch, not the one checked out when the guard reads the command."""
+    switched = {} if switched is None else switched
     index = 1
     while index < len(words) and words[index].startswith("-"):
         option = words[index]
@@ -324,16 +366,28 @@ def git_refusal(words, directory):
             index += 1
     if index >= len(words): return None
     action, arguments = words[index], words[index + 1:]
-    branch = None
+    where = str(Path(directory).resolve())
+    if action in ("switch", "checkout"):
+        target = switched_to(action, arguments, directory)
+        if target is not None: switched[where] = target
+        return None
+    branch, unread = None, False
     if action in ("push", "merge", "pull"):
-        branch = git(directory, "symbolic-ref", "--short", "-q", "HEAD")
+        earlier = switched.get(where)
+        if earlier is UNREAD: unread = True
+        if earlier is None or earlier is UNREAD: branch = git(directory, "symbolic-ref", "--short", "-q", "HEAD")
+        elif earlier is not DETACHED: branch = earlier
+    # When an earlier switch names no branch the guard can read, it judges by the one checked out now, and says so.
+    judged = (f" (judged by the branch checked out now, {branch}, since an earlier git switch or checkout in this "
+              "command names no branch the guard can read: name the branch, or switch in a command of its own)"
+              if unread else "")
     if action == "push" and push_targets_main(arguments, directory, branch):
-        return "git push would update main"
+        return "git push would update main" + judged
     if action == "merge" and branch == MAIN and not {"--abort", "--continue", "--quit"} & set(arguments) \
             and not fast_forwards_to_remote_main(arguments, directory):
-        return "git merge would change main other than by fast-forwarding it to the remote's main"
+        return "git merge would change main other than by fast-forwarding it to the remote's main" + judged
     if action == "pull" and branch == MAIN and not pull_fast_forwards_to_remote_main(arguments, directory):
-        return "git pull would change main other than by fast-forwarding it to the remote's main"
+        return "git pull would change main other than by fast-forwarding it to the remote's main" + judged
     if action == "update-ref" and any(is_main(word) for word in arguments if not word.startswith("-")):
         return "git update-ref would move main"
     if action == "branch" and any(word in ("-f", "--force", "-D", "-M", "-C") or word.startswith("--force")
@@ -342,10 +396,12 @@ def git_refusal(words, directory):
     return None
 
 
-def refusal(command, directory, depth=0):
-    """Why command lands on main by hand, or None."""
+def refusal(command, directory, depth=0, switched=None):
+    """Why command lands on main by hand, or None. Its commands are read in order, following cd and each git switch or
+    checkout (git_refusal)."""
     found = segments(command)
     if found is None or depth > 3: return None
+    switched = {} if switched is None else switched
     for words in found:
         words = plain(words)
         if not words: continue
@@ -355,11 +411,11 @@ def refusal(command, directory, depth=0):
             directory = (directory / os.path.expanduser(target)) if target and target != "-" else Path.home()
             continue
         if name in SHELLS and "-c" in words[1:-1]:
-            inner = refusal(words[words.index("-c", 1) + 1], directory, depth + 1)
+            inner = refusal(words[words.index("-c", 1) + 1], directory, depth + 1, switched)
             if inner: return inner
             continue
         if name == "git":
-            why = git_refusal(words, directory)
+            why = git_refusal(words, directory, switched)
             if why: return why
         if name == "gh" and words[1:3] == ["pr", "merge"]:
             return "gh pr merge would merge a pull request into main"
