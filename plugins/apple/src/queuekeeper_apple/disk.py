@@ -155,7 +155,7 @@ def kind_limit(host):
     """How long a pool's whole kind must be unused before its last member and template go: KIND_PRUNE_AFTER, or
     shorter when the volume is short of space, in whole minutes, so the prune command says it exactly."""
     standard = simulator_pool.KIND_PRUNE_AFTER.total_seconds()
-    seconds = host.window(standard, KIND_IDLE_FLOOR)
+    seconds = disk.window(host, standard, KIND_IDLE_FLOOR)
     if seconds == standard: return simulator_pool.KIND_PRUNE_AFTER
     return datetime.timedelta(minutes=int(seconds // 60))
 
@@ -239,11 +239,11 @@ def simulators(host, usage, sizes):
                                              "member of the kind warms another", prune_command(pool, udid, kind_after))
                              if allowed else
                              item(KEPT, f"the {pool} pool's warmed template of its kind, kept: {why}"))
-                if not allowed and kind and host.cutoff is not None:
+                if not allowed and kind and getattr(host, "cutoff", None) is not None:
                     waiting.append((items[-1], pool, template, kind))
             elif record: items.append(item(KEPT, f"named in the device record {record}"))
             elif disposable_name(name):
-                if idle is not None and idle >= host.window(host.min_idle):
+                if idle is not None and idle >= disk.window(host, host.min_idle):
                     gone = "" if device.get("isAvailable", True) else "; unavailable, its runtime is gone"
                     items.append(item(CANDIDATE, f"a disposable device (unique name) left shut down and unreferenced; "
                                                  f"last used {age(idle)} ago{gone}", command))
@@ -429,7 +429,7 @@ def listed_runtimes(host):
         used[runtime] = used.get(runtime, 0) + len(devices)
     chosen = chosen_builds(host)
     unreadable = [path for path, text in host.records.items() if text is None]
-    limit = host.window(RUNTIME_IDLE_DAYS * 86400, RUNTIME_IDLE_FLOOR)
+    limit = disk.window(host, RUNTIME_IDLE_DAYS * 86400, RUNTIME_IDLE_FLOOR)
     within = f"{RUNTIME_IDLE_DAYS} days" if limit == RUNTIME_IDLE_DAYS * 86400 else age(limit)
     items = []
     for key, image in host.runtimes.items():
