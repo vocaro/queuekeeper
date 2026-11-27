@@ -184,7 +184,15 @@ qk pr check 42
   and 75 when a lane gave no verdict or the same pull request is being checked already.
 
 To make GitHub wait for it, add `queuekeeper/gate` (or each `queuekeeper/LANE`) as a required
-status check in the branch's ruleset. A status belongs to the commit it tested, so a push after
+status check in the branch's ruleset.
+
+A check tests the pull request against `main` as it was. When another pull request merges first,
+a pull request that then conflicts is rebased and pushed, and its new head needs a check of its
+own before GitHub lets it merge. One that does not conflict keeps its earlier `success`, tested
+without the change that just landed; turn on the ruleset's *Require branches to be up to date
+before merging* to have each one updated and checked again, or use the merge queue for pull
+requests ([The queue for pull requests](#the-queue-for-pull-requests)), which tests each one with
+what lands ahead of it. A status belongs to the commit it tested, so a push after
 the check started needs a new check. Nothing runs it on its own: the agents' rule that
 `qk agents setup` writes tells them to run it after opening a pull request and after each push
 ([Tell your agents](#tell-your-agents)), and you can run it yourself.
@@ -219,9 +227,13 @@ ahead of it, batches and bisects as it does for `qk land`, and merges what passe
 - **`qk land` without `--pr`** queues no branch in such a project, and says to open a pull
   request instead.
 
-The queue does not yet notice a label removed or a push made while an entry waits, nor queue
-labeled pull requests by itself: take an entry out with `qk queue remove ID`, and run
-`qk land --pr` again after a push.
+- **Approval is asked again before the push.** Once a batch passes, the queue asks GitHub
+  about each pull request in it. One that was closed, pushed again, or had its label taken off
+  while it waited is taken out, with the reason in `removedWhy`, and the rest are gated again
+  without it. While `gh` cannot answer, the queue holds and pushes nothing.
+
+The queue does not yet queue labeled pull requests by itself: run `qk land --pr` after adding
+the label, and again after a push.
 
 ### Tell your agents
 

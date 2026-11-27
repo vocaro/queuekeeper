@@ -8105,6 +8105,11 @@ class Worker:
             self.say("an entry was removed during the run: gating what is left")
             queue.mark(applied, QUEUED)
             return QUEUED
+        # A pull request whose label came off, or whose head moved, while it was gated is no longer approved as tested.
+        lapsed = self.pull_requests_lapsed(queue, applied)
+        if lapsed:
+            queue.mark([entry for entry in applied if entry["id"] not in lapsed], QUEUED)
+            return QUEUED
         if flakes and runner.reused_gates:
             # A recorded flake can change commit metadata. Rerun the whole gate before using this recovery path.
             for entry in applied: queue.record(entry, gateCandidates={})
@@ -8122,6 +8127,23 @@ class Worker:
         elif not self.alone:
             self.limit, self.suspects = None, 0
         return outcome
+
+    def pull_requests_lapsed(self, queue, batch):
+        """The IDs of batch's pull request entries that may not be pushed, each taken out (REMOVED) with why: closed,
+        pushed again or unlabeled since it was queued (pull_requests.recheck, vocaro/queuekeeper#376). The rest are
+        gated again without them. Holds, pushing nothing, while gh cannot say: what lands must still be approved."""
+        lapsed = set()
+        for entry in batch:
+            if not entry.get("pullRequest"): continue
+            from .pull_requests import recheck
+            approved, why = recheck(queue.root, entry["pullRequest"], entry["tip"])
+            if approved is None:
+                raise Hold(CLEARS, f"{why}; nothing is pushed until it can, since only a labeled pull request lands")
+            if approved: continue
+            self.say(f"{entry['id']}: {why}: taken out, and the rest gated again without it")
+            queue.settle(entry, REMOVED, removedWhy=why)
+            lapsed.add(entry["id"])
+        return lapsed
 
     def count_locked(self, runner, config, lane, log):
         """Count toward LOCKED_SCREEN_RUNS the run of lane that log holds, which ended behind a locked screen, when
