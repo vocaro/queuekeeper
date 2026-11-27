@@ -351,5 +351,106 @@ class CommandTests(Extended):
         self.assertIn("--yes names who asked for --delete's removals", error.getvalue())
 
 
+class PressureTests(Extended):
+    """Under the low-space trigger the idle limits shorten as little as the goal needs, the least recently used
+    first (owner's decision, 2026-11-26)."""
+    GIB = disk.GIB
+
+    def aged(self, idles):
+        """A plugin's items, each kept for 7 days of idleness or, loosened, IDLE_FLOOR: (name, idle, GiB) each."""
+        def items(host, usage, sizes, wanted):
+            if "scratch" not in wanted: return []
+            limit = host.window(7 * 86400)
+            return [disk.Item("scratch", name, disk.CANDIDATE if idle >= limit else disk.KEPT, f"idle {idle}",
+                              int(gib * self.GIB), ["true"], idle) for name, idle, gib in idles]
+        return items
+
+    def loosened(self, idles, free, low=50, goal=100):
+        listed = self.aged(idles)
+        with patch.object(disk, "PLUGIN_ITEMS", [listed]), patch.dict(disk.PLUGIN_CATEGORIES, {listed: ["scratch"]}):
+            host, sizes = self.host(), disk.Sizes(measure=False)
+            items = disk.inventory(host, sizes)
+            found, pressure = disk.loosen(host, sizes, items, int(free * self.GIB), int(low * self.GIB),
+                                          int(goal * self.GIB))
+        return {item.path: item for item in found}, pressure, host
+
+    def test_the_limits_shorten_only_as_far_as_the_goal_needs_the_least_recently_used_first(self):
+        days = 86400
+        idles = [("old", 8 * days, 5), ("week", 6 * days, 20), ("days", 3 * days, 20), ("hours", 5 * 3600, 20),
+                 ("now", 600, 20)]
+        items, pressure, host = self.loosened(idles, free=40, goal=80)
+        # 5 GiB at the standard limit; 35 more reach 80 GiB free, which "week" and "days" give.
+        self.assertEqual({path for path, item in items.items() if item.status == disk.CANDIDATE}, {"old", "week", "days"})
+        self.assertEqual(pressure.standard, 5 * self.GIB)
+        self.assertEqual(pressure.needed, 35 * self.GIB)
+        self.assertEqual(pressure.reached, 45 * self.GIB)
+        self.assertLess(pressure.cutoff, 3 * days)
+        self.assertGreater(pressure.cutoff, 5 * 3600)
+        self.assertEqual(host.cutoff, pressure.cutoff)
+        self.assertIn("loosened: 40.0 GiB free is under 50.0 GiB, so idle limits shorten", items["days"].reason)
+        self.assertNotIn("loosened", items["old"].reason)  # a candidate under the standard rules
+
+    def test_an_unreachable_goal_shortens_to_the_floor_and_no_further(self):
+        items, pressure, _ = self.loosened([("hours", 5 * 3600, 1), ("now", 600, 1)], free=10)
+        self.assertEqual(items["hours"].status, disk.CANDIDATE)
+        self.assertEqual(items["now"].status, disk.KEPT)  # within IDLE_FLOOR
+        self.assertLess(pressure.reached, pressure.needed)
+
+    def test_enough_free_space_or_enough_standard_candidates_keep_the_standard_limits(self):
+        idles = [("old", 8 * 86400, 60), ("days", 3 * 86400, 20)]
+        for free in (50, 45):
+            items, pressure, host = self.loosened(idles, free=free)
+            self.assertEqual(items["days"].status, disk.KEPT, free)
+            self.assertIsNone(pressure.cutoff)
+            self.assertIsNone(host.cutoff)
+        # The trigger at 0 keeps the standard limits however little is free.
+        items, pressure, _ = self.loosened(idles[1:], free=1, low=0)
+        self.assertEqual(items["days"].status, disk.KEPT)
+
+    def test_the_window_never_lengthens_a_limit_or_shortens_it_below_its_floor(self):
+        host = self.host()
+        self.assertEqual(host.window(86400), 86400)
+        host.cutoff = 7200
+        self.assertEqual((host.window(86400), host.window(3600), host.window(86400, 4 * 3600)), (7200, 3600, 14400))
+        host.cutoff = 0
+        self.assertEqual((host.window(86400), host.window(600)), (disk.IDLE_FLOOR, 600))
+
+    def test_the_command_loosens_under_the_trigger_and_delete_checks_again_at_the_same_limit(self):
+        # Changed 3 hours before the inventory: kept by the standard 24 hours, a candidate loosened.
+        for folder in (self.scratch, self.other): os.utime(folder, (LATER - 3 * 3600, LATER - 3 * 3600))
+        host = self.host()
+        def run(*arguments, free=40):
+            output = StringIO()
+            with patch.object(disk.Host, "current", return_value=host), patch.object(disk.Sizes, "prime"), \
+                    patch.object(disk, "volume_usage", return_value=(2000 * self.GIB, 1960 * self.GIB, free * self.GIB)), \
+                    patch.object(disk, "ledger_path", return_value=self.ledger), \
+                    contextlib.redirect_stdout(output), contextlib.redirect_stderr(StringIO()):
+                self.assertEqual(cli.main(["--project", str(self.root), "disk", "--min-size-mb", "0", *arguments]), 0)
+            return output.getvalue()
+        self.assertIn("kept", run(free=60).split(str(self.scratch))[0].rsplit("\n", 1)[-1])
+        text = run()
+        self.assertIn("Short of space: 40.0 GiB free is under 50.0 GiB", text)
+        self.assertIn("loosened:", text)
+        self.assertIn(f"$ rm -rf -- {self.scratch}", text)
+        self.assertNotIn("loosened", run("--low-free-gb", "0"))
+        value = json.loads(run("--json"))
+        self.assertEqual(value["pressure"]["low"], 50 * self.GIB)
+        self.assertIsNotNone(value["pressure"]["cutoff"])
+        with patch.dict(os.environ, {"QUEUEKEEPER_DISK_LOW_GB": "30"}):
+            self.assertNotIn("loosened", run())
+        run("--delete")
+        self.assertFalse(self.scratch.exists())
+        self.assertFalse(self.other.exists())
+        entries = [json.loads(line) for line in self.ledger.read_text().splitlines()]
+        self.assertEqual({entry["outcome"] for entry in entries}, {"removed"})
+
+    def test_an_item_whose_folder_went_with_an_earlier_removal_is_skipped(self):
+        gone = disk.Item("scratch", "Project Duo template", disk.CANDIDATE, "goes with its kind", 1, ["false"],
+                         location=str(self.root / "deleted-device"))
+        removed = disk.delete([gone], lambda category: [gone], self.ledger, out=lambda line: None)
+        self.assertEqual(removed, 0)
+        self.assertEqual(json.loads(self.ledger.read_text())["outcome"], "skipped: already removed with an earlier item")
+
+
 if __name__ == "__main__":
     unittest.main()

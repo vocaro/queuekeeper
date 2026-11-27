@@ -159,6 +159,35 @@ class SimulatorTests(Fixture):
         self.assertIn("its kind has no member left", items[orphan["udid"]].reason)
         self.assertEqual(items[orphan["udid"]].command[-2:], ["prune", orphan["udid"]])
 
+    def test_short_of_space_a_kind_idle_past_the_cutoff_offers_its_last_member_and_then_its_template(self):
+        stamp = lambda hours: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(LATER - hours * 3600))
+        of = lambda name, kind, hours: device(name, used=stamp(hours), deviceTypeIdentifier=kind)
+        left, template = of("Project Duo 1", "duo", 48), of("Project Duo template (iOS-27-0)", "duo", 200)
+        busy, held = of("Project iPad 1", "ipad", 48), of("Project iPad template (iOS-27-0)", "ipad", 200)
+        today = of("Project Max 1", "max", 12)
+        busy["state"] = "Booted"
+        listing = {"devices": {"com.apple.CoreSimulator.SimRuntime.iOS-27-0": [template, left, held, busy, today]}}
+        host = self.host(simulators=listing, pools=frozenset({"Project"}))
+        standard = {item.path.split(" ")[0]: item for item in disk.inventory(host, disk.Sizes(measure=False), ["simulator"])}
+        self.assertEqual(standard[left["udid"]].status, disk.KEPT)
+        host.cutoff = 30 * 3600
+        found = disk.inventory(host, disk.Sizes(measure=False), ["simulator"])
+        items = {item.path.split(" ")[0]: item for item in found}
+        self.assertEqual(items[left["udid"]].status, disk.CANDIDATE, items[left["udid"]].reason)
+        self.assertEqual(items[left["udid"]].command[-4:], ["prune", "--kind-idle-hours", "30.00", left["udid"]])
+        self.assertEqual(items[template["udid"]].status, disk.CANDIDATE, items[template["udid"]].reason)
+        self.assertIn("every member of which is a candidate", items[template["udid"]].reason)
+        self.assertEqual(items[template["udid"]].command[-1], template["udid"])
+        # Templates come last, so --delete reaches the members first.
+        order = [item.path.split(" ")[0] for item in found]
+        self.assertGreater(order.index(template["udid"]), order.index(left["udid"]))
+        # A kind with a member in use keeps its template, and the loosened limit stops at a day.
+        self.assertEqual(items[held["udid"]].status, disk.KEPT)
+        host.cutoff = 0
+        items = {item.path.split(" ")[0]: item for item in disk.inventory(host, disk.Sizes(measure=False), ["simulator"])}
+        self.assertEqual(items[today["udid"]].status, disk.KEPT, items[today["udid"]].reason)
+        self.assertIn("within 24 hours", items[today["udid"]].reason)
+
     def test_the_pools_are_those_the_main_checkouts_name(self):
         (self.main / "queuekeeper.json").write_text(json.dumps({"simulatorPool": "Project"}))
         (self.development / "Unconfigured").mkdir()
@@ -235,6 +264,20 @@ class SimulatorTests(Fixture):
         self.assertEqual(items["D"].status, disk.KEPT)
         self.assertIn("within 14 days", items["D"].reason)
         self.assertEqual(items["E"].status, disk.KEPT)
+
+    def test_short_of_space_an_unused_runtime_goes_sooner_but_not_within_a_day(self):
+        stamp = lambda days: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(LATER - days * 86400))
+        listing = {"devices": {}}
+        runtime = lambda key, version, days: {"identifier": key, "sizeBytes": 8, "lastUsedAt": stamp(days),
+                                              "runtimeIdentifier": f"com.apple.CoreSimulator.SimRuntime.iOS-{version}"}
+        images = {"A": runtime("A", "27-0", 3), "B": runtime("B", "27-1", 0.5)}
+        host = self.host(simulators=listing, runtimes=images, now=LATER)
+        host.cutoff = 0
+        items = {item.path[0]: item for item in disk.inventory(host, disk.Sizes(measure=False), ["runtime"])}
+        self.assertEqual(items["A"].status, disk.CANDIDATE, items["A"].reason)
+        self.assertIn("over 24 h ago or never", items["A"].reason)
+        self.assertEqual(items["B"].status, disk.KEPT)
+        self.assertIn("within 24 h", items["B"].reason)
 
     def test_a_superseded_runtime_build_is_a_candidate_unless_chosen_pinned_reserved_or_recent(self):
         # vocaro-engineering#188: devices of an identifier run on one build, so another build of it is idle.

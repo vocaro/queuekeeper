@@ -3233,7 +3233,8 @@ time has passed, once its simulator is shut down, or once simctl lists other dev
 CoreSimulator folder is gone. Anything it cannot prove, it leaves held and names with a `qk devices recover`
 command. A member unused for an hour may be deleted, except each kind's lowest-numbered one, which
 goes only when you ask (`qk simulator-pool prune` or `qk disk`) and every member of the kind has been
-unused for 7 days. `qk simulator-pool list` shows each member and template and whether it may be pruned.
+unused for 7 days, or for as little as a day when `qk disk` finds the volume
+[short of space](#when-space-is-short) (`prune --kind-idle-hours HOURS`). `qk simulator-pool list` shows each member and template and whether it may be pruned.
 
 **Renaming a pool.** Changing `simulatorPool` in `queuekeeper.json` leaves the old pool's members and
 warmed templates on each Mac. The project owner can remove them once the rename has landed, no
@@ -4240,6 +4241,38 @@ open file or an argument inside it. The rules for each category:
 **No runtime is removed while any simulator on this Mac runs or is reserved**, on any runtime: they
 share one launch host, and deleting a runtime can crash it. An unreadable device record keeps every
 device and superseded runtime it might name.
+
+These are the standard limits. When the volume is short of space, `qk disk` shortens the idle ones,
+as described next.
+
+### When space is short
+
+The standard limits suit a disk with room: a pool keeps a kind for a week after its last use, and an
+unused runtime for two weeks. When the data volume has less than **50 GiB** free, `qk disk` shortens
+these idle limits so that it can delete more, aiming for **100 GiB** free:
+
+- **Least recently used first.** It finds the longest idle limit at which the candidates would bring
+  the volume to the goal. Items that have been idle longest become candidates first, whichever
+  category they are in. If no limit reaches the goal, it uses the shortest limits allowed.
+- **Only idle limits shorten.** Nothing that is in use, booted, reserved, named by a device record,
+  pinned, an owner item or kept for any other reason becomes a candidate.
+- **Each limit has a floor.** A pool's whole kind and an unused runtime go after at least a day
+  idle; idle caches, DerivedData and disposable simulators go after at least an hour. Under pressure a
+  pool's template goes with its kind once every member of the kind is a candidate. Kept lane results
+  and pinned checkouts keep their own rules.
+- **It says so.** The report starts with a `Short of space:` line giving the free space, the trigger,
+  the limit chosen and how much more it aims to free. Each item that only the shortened limits make a
+  candidate says `loosened:`, and `--json` carries a `pressure` object with the same values in bytes.
+- **`--delete` checks again at the same limit,** and skips a template already deleted with its kind's
+  last member.
+
+| Setting | Default | Effect |
+|---|---|---|
+| `--low-free-gb`, `QUEUEKEEPER_DISK_LOW_GB` | 50 | Shorten the idle limits below this much free space. 0 keeps the standard limits |
+| `--goal-free-gb`, `QUEUEKEEPER_DISK_GOAL_GB` | 100 | The free space the shortened limits aim for. Never less than the trigger |
+
+The goal is above the trigger so that one run under pressure leaves the volume clear of the trigger,
+rather than just under it again after the next build.
 
 ### Deleting
 
