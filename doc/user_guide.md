@@ -184,8 +184,9 @@ qk pr check 42
 
 To make GitHub wait for it, add `queuekeeper/gate` (or each `queuekeeper/LANE`) as a required
 status check in the branch's ruleset. A status belongs to the commit it tested, so a push after
-the check started needs a new check. Nothing runs it for you yet: run it yourself, or have the
-agent run it in the background after opening the pull request.
+the check started needs a new check. Nothing runs it on its own: the agents' rule that
+`qk agents setup` writes tells them to run it after opening a pull request and after each push
+([Tell your agents](#tell-your-agents)), and you can run it yourself.
 
 ### Tell your agents
 
@@ -234,7 +235,10 @@ A project with `"integration": "pull-request"` gets:
 
 ```markdown
 Never push to main or merge a pull request. Commit on your own branch, push it and open a
-pull request; a person reviews and merges it. Run tests and builds with `qk run LANE` or
+pull request; a person reviews and merges it. Then run `qk pr check` as a background command,
+which tests the pull request on the shared Macs and posts the result on it, and follow it to its
+result: exit 0 means every lane passed, 1 that one failed, and 75 that one gave no verdict and
+needs another check. Check again after each push. Run tests and builds with `qk run LANE` or
 `qk admit -- COMMAND`, never bare, so that they wait their turn on the shared Macs. Run unittest
 suites with `qk unittest`, never `python3 -m unittest`. Send a long run's output to a file, never
 through `tail` or `head`, and trim when reading it; `qk progress` says how far a run has got.
