@@ -4,7 +4,8 @@ Everything you need to set up Queuekeeper, land changes through it, and follow w
 The [README](../README.md) explains what Queuekeeper is for. The [developer guide](developer_guide.md)
 covers how it works inside and how to change it.
 
-- [Set up](#set-up): requirements, install, configure a project, tell your agents, add Macs
+- [Set up](#set-up): requirements, install, configure a project, pull requests or the merge queue,
+  tell your agents, add Macs
 - [Land changes](#land-changes): what the merge queue does with a commit
 - [Lanes and admission](#lanes-and-admission): the commands Queuekeeper runs, and when a Mac has room
 - [The build farm](#the-build-farm): running work on more than one Mac
@@ -25,9 +26,11 @@ covers how it works inside and how to change it.
   so install a current one, for example with Homebrew.
 - **Git**, and a repository that:
   - has a remote named `origin` you can push to without a prompt, and
-  - lands changes directly on `main`. Queuekeeper refuses a project that integrates through pull
-    requests.
-- **A command that tests the project** and exits nonzero when it fails. This becomes the gate.
+  - lets Queuekeeper push to `main`, for its merge queue. A project that integrates through pull
+    requests instead uses the rest of Queuekeeper without the queue
+    ([Pull requests or the merge queue](#pull-requests-or-the-merge-queue)).
+- **A command that tests the project** and exits nonzero when it fails. This becomes the gate,
+  which a project that integrates through pull requests may leave out.
 
 The Apple plugin has [requirements of its own](../plugins/apple/src/queuekeeper_apple/README.md#requirements).
 
@@ -109,33 +112,80 @@ Defaults to know about:
 
 [Lanes and admission](#lanes-and-admission) describes the other lane settings.
 
+### Pull requests or the merge queue
+
+A project chooses how its changes reach `main` with `integration` in `queuekeeper.json`:
+
+| `integration` | How changes reach `main` | What Queuekeeper does |
+|---|---|---|
+| `"direct-main"`, the default | Agents run `qk land`; the merge queue tests each change with what lands ahead of it and pushes what passes | Everything in this guide |
+| `"pull-request"` | Agents push a branch and open a pull request; a person, or the project's own merge rules, merges it | Everything except the merge queue: lanes and admission, the build farm, simulators and devices, the dashboard and notifications |
+
+Choose `"pull-request"` when the project's `main` requires an approved pull request or checks
+that run on GitHub, or when you want to review every change before it lands:
+
+```json queuekeeper.json
+{
+  "schemaVersion": 1,
+  "name": "my-app",
+  "integration": "pull-request",
+  "plugins": [],
+  "lanes": {
+    "check": {"command": ["scripts/check.sh"], "timeout": 600},
+    "build": {"command": ["scripts/build.sh"], "timeout": 1800}
+  }
+}
+```
+
+In such a project:
+
+- **Builds and tests still take admission.** Agents run them with `qk run LANE` or
+  `qk admit -- COMMAND`, so that several agents share the Mac's slots, simulators and devices
+  instead of all building at once. Name the lanes as you like; none has to be `gate`.
+- **`qk land` queues nothing.** It says the project integrates through pull requests and what
+  to do instead. `qk queue` has no entries for it.
+- **`qk agents setup`** writes the pull-request rule into the agent instructions, and its guard
+  still refuses pushing to `main` and `gh pr merge`, pointing agents to a pull request instead
+  of `qk land` ([Tell your agents](#tell-your-agents)). Syncing local `main` with
+  `git merge --ff-only origin/main` or `git pull --ff-only` after a merge passes.
+- **`qk doctor`** reports the project's `integration`, does not ask for a gate lane, and warns
+  when the agent instructions hold the other mode's rule.
+
+To move a project from one mode to the other, change `integration` and run `qk agents setup`
+again, which rewrites the rule it wrote. Moving to `"direct-main"` also needs a `gate` lane and a
+`main` that Queuekeeper may push to, so remove any rule that requires a pull request.
+
 ### Tell your agents
 
-Agents have to be told to queue their work instead of pushing it. In the project, run:
+Agents have to be told to queue their work, or to open a pull request, instead of pushing it.
+In the project, run:
 
 ```sh
 qk agents setup --guard
 ```
 
-It writes the rule below into `AGENTS.md`, or `CLAUDE.md` when only that exists (`--file PATH`
-picks others), and merges [Claude Code's hooks](#claude-codes-hooks) into `.claude/settings.json`,
+It writes the rule below that fits the project's
+[`integration`](#pull-requests-or-the-merge-queue) into `AGENTS.md`, or `CLAUDE.md` when only that
+exists (`--file PATH` picks others), and merges [Claude Code's hooks](#claude-codes-hooks) into `.claude/settings.json`,
 leaving everything else in both files as it was. Without `--guard` it adds only the session-start
 hook. Commit both files and land them, so that every worktree has them.
 
-- **Running it again** brings the rule up to date with this version of Queuekeeper. The rule sits
-  between two marker lines, and the first records a hash of what was written: a block someone
-  edited since is left alone, and `--force` replaces it.
+- **Running it again** brings the rule up to date with this version of Queuekeeper and with the
+  project's `integration`. The rule sits between two marker lines, and the first records a hash
+  of what was written: a block someone edited since is left alone, and `--force` replaces it.
 - **`qk agents remove`** takes out the block, unless it was edited, and only the hooks setup
   adds. A file left empty is deleted.
-- **`qk agents check`** says what is in place, and exits 0 when the rule and the session-start
-  hook both are, and no hook runs its launcher by a relative path.
+- **`qk agents check`** says what is in place, and exits 0 when the project's rule and the
+  session-start hook both are, and no hook runs its launcher by a relative path. A block that is
+  the other mode's rule makes it exit 1.
 - **`--launcher`** names the command the hooks run, `qk` unless you say otherwise, for example
   `--launcher "python3 scripts/qk"`. Claude Code runs a hook wherever the session has `cd`'d to,
   so setup anchors a path relative to the project on `$CLAUDE_PROJECT_DIR`: that example is
   written as `python3 "$CLAUDE_PROJECT_DIR"/scripts/qk`. Running setup again anchors a hook an
   earlier version wrote with a relative path.
 
-For other agents, add the rule to the instructions they read yourself, adapting the lane names:
+For other agents, add the rule to the instructions they read yourself, adapting the lane names.
+A project that lands through the merge queue gets:
 
 ```markdown
 Never push to main. Commit on your own branch, then run `qk land --wait` as a
@@ -143,6 +193,16 @@ background command and follow it to its result. Exit 0 means landed, 1 means it 
 with a reason, and 75 means the queue is held or still waiting. If the wait is interrupted, the
 entry still lands: follow it with `qk queue wait ID`, or run the same `qk land --wait` again,
 which follows the entry already queued. Run tests and builds with `qk run LANE` or
+`qk admit -- COMMAND`, never bare, so that they wait their turn on the shared Macs. Run unittest
+suites with `qk unittest`, never `python3 -m unittest`. Send a long run's output to a file, never
+through `tail` or `head`, and trim when reading it; `qk progress` says how far a run has got.
+```
+
+A project with `"integration": "pull-request"` gets:
+
+```markdown
+Never push to main or merge a pull request. Commit on your own branch, push it and open a
+pull request; a person reviews and merges it. Run tests and builds with `qk run LANE` or
 `qk admit -- COMMAND`, never bare, so that they wait their turn on the shared Macs. Run unittest
 suites with `qk unittest`, never `python3 -m unittest`. Send a long run's output to a file, never
 through `tail` or `head`, and trim when reading it; `qk progress` says how far a run has got.
@@ -3843,7 +3903,8 @@ a rebase. It says nothing otherwise, and never creates a queue.
 ```
 
 **`qk hook pre-tool-use`**, with the matcher `Bash`, refuses a command that would land on `main`
-by hand and points the agent to `qk land --wait`:
+by hand and points the agent to `qk land --wait`, or, in a project with
+`"integration": "pull-request"`, to a pull request that a person merges:
 
 - `git push` to `main`: a refspec whose destination is `main`, `--all` or `--mirror`, or a bare
   push from `main` or from a branch whose push destination is `main`;

@@ -1,13 +1,14 @@
-"""`qk agents`: tell a project's coding agents to land through the queue, in one command and undone by another.
+"""`qk agents`: tell a project's coding agents how their work reaches main, in one command and undone by another.
 
-Setup writes the rule the user guide gives under "Tell your agents" into the project's agent instructions, between
-two marker lines, and merges Claude Code hooks into .claude/settings.json: one at SessionStart that reports this
-worktree's entries that came back or wait (agent_hooks.session_start), and optionally a PreToolUse guard that
-refuses landing on main by hand (agent_hooks.pre_tool_use).
+Setup writes a rule the user guide gives under "Tell your agents" into the project's agent instructions, between
+two marker lines: the merge queue's, or, in a project whose queuekeeper.json says `"integration": "pull-request"`,
+the pull request's (vocaro/queuekeeper#374). It merges Claude Code hooks into .claude/settings.json: one at
+SessionStart that reports this worktree's entries that came back or wait (agent_hooks.session_start), and optionally
+a PreToolUse guard that refuses landing on main by hand (agent_hooks.pre_tool_use).
 
 The begin marker records a hash of what was written. Setup run again rewrites a block that still matches it, so the
-rule follows Queuekeeper's; removal deletes only such a block, never one a person edited since. Removal takes out of
-settings.json only the hook commands setup writes, and leaves every other entry as it was.
+rule follows Queuekeeper's and the project's integration; removal deletes only such a block, never one a person
+edited since. Removal takes out of settings.json only the hook commands setup writes, and leaves every other entry as it was.
 
 Claude Code runs a hook in the session's current directory, which a Bash `cd` moves, so a launcher path relative to the
 project is written anchored on $CLAUDE_PROJECT_DIR (vocaro/queuekeeper#275). Check reports a hook written before that, and setup run
@@ -22,7 +23,10 @@ import shlex
 import subprocess
 import sys
 
-# The rule, word for word the block under "Tell your agents" in the user guide (a test keeps them equal).
+from .agent_hooks import DIRECT_MAIN, PULL_REQUEST, integration
+
+# The rules, word for word the blocks under "Tell your agents" in the user guide (a test keeps them equal): RULE for
+# a project that lands through the merge queue, PULL_REQUEST_RULE for one that integrates through pull requests.
 RULE = """\
 Never push to main. Commit on your own branch, then run `qk land --wait` as a
 background command and follow it to its result. Exit 0 means landed, 1 means it came back
@@ -33,6 +37,16 @@ which follows the entry already queued. Run tests and builds with `qk run LANE` 
 suites with `qk unittest`, never `python3 -m unittest`. Send a long run's output to a file, never
 through `tail` or `head`, and trim when reading it; `qk progress` says how far a run has got.
 """
+PULL_REQUEST_RULE = """\
+Never push to main or merge a pull request. Commit on your own branch, push it and open a
+pull request; a person reviews and merges it. Run tests and builds with `qk run LANE` or
+`qk admit -- COMMAND`, never bare, so that they wait their turn on the shared Macs. Run unittest
+suites with `qk unittest`, never `python3 -m unittest`. Send a long run's output to a file, never
+through `tail` or `head`, and trim when reading it; `qk progress` says how far a run has got.
+"""
+RULES = {DIRECT_MAIN: RULE, PULL_REQUEST: PULL_REQUEST_RULE}
+# What each integration is called where setup and check name it.
+MODES = {DIRECT_MAIN: "landing through the merge queue", PULL_REQUEST: "integrating through pull requests"}
 BEGIN = "<!-- queuekeeper:agents begin sha256={} -- written by `qk agents setup`; `qk agents remove` takes it out -->"
 END = "<!-- queuekeeper:agents end -->"
 FENCED = re.compile(r"^<!-- queuekeeper:agents begin sha256=([0-9a-f]{16})\b[^\n]*-->\n(.*?)^<!-- queuekeeper:agents end -->\n?",
@@ -75,25 +89,31 @@ def instruction_files(root, named):
     return [next((root / name for name in INSTRUCTIONS if (root / name).exists()), root / INSTRUCTIONS[0])]
 
 
-def write_rule(path, force):
-    """Put the block in path. Returns (status, line)."""
+def write_rule(path, force, body=RULE):
+    """Put the block of rule body in path. Returns (status, line)."""
     try: text = path.read_text() if path.exists() else ""
     except OSError as error: return 2, f"{path}: cannot read: {error}"
     found, intact = find_block(text)
     if found is None:
-        updated = text + ("\n" if text and not text.endswith("\n") else "") + ("\n" if text.strip() else "") + block()
+        updated = text + ("\n" if text and not text.endswith("\n") else "") + ("\n" if text.strip() else "") + block(body)
         said = f"{path}: added the Queuekeeper rule"
     elif not intact and not force:
         return 1, (f"{path}: the Queuekeeper block was edited since it was written, so it is left as it is; "
                    "`qk agents setup --force` replaces it")
-    elif found.group(0) == block():
+    elif found.group(0) == block(body):
         return 0, f"{path}: the Queuekeeper rule is current"
     else:
-        updated = text[:found.start()] + block() + text[found.end():]
-        said = f"{path}: rewrote the Queuekeeper rule"
+        updated = text[:found.start()] + block(body) + text[found.end():]
+        other = other_mode(found.group(2), body)
+        said = f"{path}: rewrote the Queuekeeper rule" + (f", which was the rule for {MODES[other]}" if other else "")
     try: path.write_text(updated)
     except OSError as error: return 2, f"{path}: cannot write: {error}"
     return 0, said
+
+
+def other_mode(written, body):
+    """The integration whose rule written is, when that is not the rule body, or None."""
+    return next((mode for mode, rule in RULES.items() if written == rule and rule != body), None)
 
 
 def remove_rule(path):
@@ -227,9 +247,10 @@ def remove_hooks(settings):
 
 
 def setup(root, args):
-    status, lines = 0, []
+    mode = integration(root)
+    status, lines = 0, [f"the project is {MODES[mode]} (\"integration\" in queuekeeper.json), so agents get that rule"]
     for path in instruction_files(root, args.file):
-        found, said = write_rule(path, args.force)
+        found, said = write_rule(path, args.force, RULES[mode])
         status = max(status, found)
         lines.append(said)
     path = root / SETTINGS
@@ -253,7 +274,9 @@ def setup(root, args):
         status = 2
         lines.append(f"{path}: left as it is: {error}")
     for line in lines: print(line)
-    if status == 0:
+    if status == 0 and mode == PULL_REQUEST:
+        print("commit these files on a branch and merge them through a pull request, so that every worktree has them")
+    elif status == 0:
         print("commit these files on a branch and land them with `qk land --wait`, so that every worktree has them")
     return status
 
@@ -282,15 +305,20 @@ def remove(root, args):
 
 
 def check(root, args):
-    """Exit 0 when the rule and the SessionStart hook are both in place."""
-    rule = False
+    """Exit 0 when the project's integration's rule and the SessionStart hook are both in place."""
+    mode, rule, wrong = integration(root), False, False
     for path in instruction_files(root, args.file) if args.file else [root / name for name in INSTRUCTIONS]:
         try: text = path.read_text()
         except OSError: continue
         found, intact = find_block(text)
         if found is None: continue
         rule = True
-        current = found.group(0) == block()
+        current = found.group(0) == block(RULES[mode])
+        if other := other_mode(found.group(2), RULES[mode]) if intact else None:
+            wrong = True
+            print(f"{path}: the Queuekeeper rule for {MODES[other]}, but the project is {MODES[mode]}: "
+                  "`qk agents setup` rewrites it")
+            continue
         print(f"{path}: the Queuekeeper rule, " + ("current" if current else "written by another version, which "
               "`qk agents setup` rewrites" if intact else "edited since it was written"))
     if not rule: print("no agent instructions hold the Queuekeeper rule: `qk agents setup` writes it")
@@ -309,7 +337,21 @@ def check(root, args):
                 print(f"{path}: the {EVENTS[name][0]} hook `{command}` runs its launcher by a path relative to the "
                       "session's directory, so it fails once a session leaves the project root; `qk agents setup` "
                       "anchors it on $CLAUDE_PROJECT_DIR")
-    return 0 if rule and hooked[SESSION_START] and not broken else 1
+    return 0 if rule and hooked[SESSION_START] and not broken and not wrong else 1
+
+
+def doctor_warnings(root, config):
+    """A warning for each agent instructions file holding the other integration's rule, unedited, which tells the
+    project's agents to reach main the way it does not (vocaro/queuekeeper#374)."""
+    mode = PULL_REQUEST if config.get("integration", DIRECT_MAIN) == PULL_REQUEST else DIRECT_MAIN
+    warnings = []
+    for name in INSTRUCTIONS:
+        try: found, intact = find_block((Path(root) / name).read_text())
+        except OSError: continue
+        if found is not None and intact and (other := other_mode(found.group(2), RULES[mode])):
+            warnings.append(f"{name} tells agents the rule for {MODES[other]}, but queuekeeper.json's integration "
+                            f"is {mode}: run `qk agents setup` to write the rule that fits")
+    return warnings
 
 
 def main(argv, project=None):

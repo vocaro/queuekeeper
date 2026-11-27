@@ -25,7 +25,9 @@ class SetupExamples(unittest.TestCase):
                 for index, example in enumerate(examples, start=1):
                     with self.subTest(example=index):
                         project = config.parse(example)
-                        self.assertIn("gate", project["lanes"])
+                        # A project that integrates through pull requests runs no merge queue, so needs no gate.
+                        if project.get("integration", "direct-main") == "direct-main":
+                            self.assertIn("gate", project["lanes"])
                         self.assertEqual(project["plugins"], plugins)
 
     def test_a_docs_only_change_to_a_setup_document_runs_this_module(self):

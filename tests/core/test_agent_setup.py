@@ -141,11 +141,54 @@ class Agents(unittest.TestCase):
         self.assertEqual(status, 2)
         self.assertEqual(self.settings.read_text(), "{not json")
 
-    def test_the_rule_is_the_user_guides(self):
+    def integrate(self, mode):
+        (self.root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "x", "integration": mode}))
+
+    def test_a_pull_request_project_gets_the_pull_request_rule(self):
+        self.integrate("pull-request")
+        status, said = self.qk("setup", "--guard")
+        self.assertEqual(status, 0, said)
+        self.assertIn("integrating through pull requests", said)
+        self.assertIn("merge them through a pull request", said)
+        self.assertNotIn("qk land", said)
+        text = (self.root / "AGENTS.md").read_text()
+        self.assertIn(agent_setup.PULL_REQUEST_RULE, text)
+        self.assertNotIn("qk land", text)
+        self.assertEqual(self.qk("check")[0], 0)
+        self.assertEqual(self.qk("remove")[0], 0)
+        self.assertFalse((self.root / "AGENTS.md").exists())
+
+    def test_changing_the_integration_is_caught_and_the_rule_rewritten(self):
+        self.qk("setup")
+        self.integrate("pull-request")
+        status, said = self.qk("check")
+        self.assertEqual(status, 1)
+        self.assertIn("rule for landing through the merge queue, but the project is integrating through pull", said)
+        self.assertEqual(len(agent_setup.doctor_warnings(self.root, {"integration": "pull-request"})), 1)
+        self.assertEqual(agent_setup.doctor_warnings(self.root, {}), [])
+        status, said = self.qk("setup")
+        self.assertEqual(status, 0, said)
+        self.assertIn("which was the rule for landing through the merge queue", said)
+        self.assertIn(agent_setup.PULL_REQUEST_RULE, (self.root / "AGENTS.md").read_text())
+        self.assertEqual(self.qk("check")[0], 0)
+        self.assertEqual(agent_setup.doctor_warnings(self.root, {"integration": "pull-request"}), [])
+        # And back: a project whose queuekeeper.json no longer says pull-request lands through the queue.
+        self.integrate("direct-main")
+        self.assertEqual(len(agent_setup.doctor_warnings(self.root, {})), 1)
+        self.assertEqual(self.qk("setup")[0], 0)
+        self.assertIn(agent_setup.RULE, (self.root / "AGENTS.md").read_text())
+
+    def test_an_unreadable_queuekeeper_json_gets_the_queues_rule(self):
+        (self.root / "queuekeeper.json").write_text("{not json")
+        self.assertEqual(self.qk("setup")[0], 0)
+        self.assertIn(agent_setup.RULE, (self.root / "AGENTS.md").read_text())
+
+    def test_the_rules_are_the_user_guides(self):
         guide = (ROOT / "doc/user_guide.md").read_text()
         section = guide[guide.index("### Tell your agents"):]
-        found = re.search(r"```markdown\n(.*?)```", section, re.DOTALL)
-        self.assertEqual(found.group(1), agent_setup.RULE)
+        section = section[:section.index("\n### ")]
+        found = re.findall(r"```markdown\n(.*?)```", section, re.DOTALL)
+        self.assertEqual(found, [agent_setup.RULE, agent_setup.PULL_REQUEST_RULE])
 
 
 if __name__ == "__main__":

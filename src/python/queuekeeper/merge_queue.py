@@ -2728,7 +2728,10 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
         raise ValueError(f"neither origin/main nor {tip[:12]} has a queuekeeper.json, so the queue has nothing to run: "
                          "commit one with a gate lane and land that first (README, Getting started)")
     if config.get("integration", "direct-main") != "direct-main":
-        raise ValueError(f"{config.get('name')} integrates by pull request, which the queue does not push to")
+        raise ValueError(f"{config.get('name')} integrates through pull requests (\"integration\": \"pull-request\" in "
+                         "queuekeeper.json), so qk land queues nothing: push the branch and open a pull request, and "
+                         "run its checks with qk run LANE. To land through the merge queue instead, remove that "
+                         "setting and let Queuekeeper push to main (user guide, Pull requests or the merge queue)")
     gating = config
     try: lanes_of(config)
     except ValueError: lanes_of(gating := config_at(root, tip))

@@ -1888,6 +1888,8 @@ def perform(argv, report):
             from .waiting import doctor_warnings as fixed_wait_warnings  # #284
             warnings += fixed_wait_warnings(root)
             warnings += lane_wait.admission_warnings(root)
+            # Agent instructions telling the project's agents to reach main the way it does not (#374).
+            warnings += agent_setup.doctor_warnings(root, config)
             # What a push by hand from this checkout runs, put right where it can be (git_hooks).
             warnings += git_hooks.check(root, config.get("gitHooks"), repair=not check_only)
             # Each of the farm's Macs that take work now is compared with this Mac, in the farm's order: a difference
@@ -1933,7 +1935,8 @@ def perform(argv, report):
             affected = lane_coverage.affected_paths(root, config)
             launcher_note = checkout.launcher_note(root, TOOLKIT_ROOT)
             warnings += lane_coverage.affected_warnings(affected)
-            print(json.dumps({"project": config["name"], "queuekeeper": str(TOOLKIT_ROOT),
+            print(json.dumps({"project": config["name"], "integration": config.get("integration", "direct-main"),
+                "queuekeeper": str(TOOLKIT_ROOT),
                 "source": source_identity(TOOLKIT_ROOT), "plugins": list(plugins.LOADED),
                 "missingCommands": missing, "errors": errors, "warnings": warnings,
                 "notes": list(dict.fromkeys([*(note for hosts in compared for note in remote.python_crash_notes(hosts)),
