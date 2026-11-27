@@ -164,6 +164,22 @@ class DeletionTests(Extended):
         self.assertEqual(sorted((record["path"], record["outcome"]) for record in records),
                          sorted([(str(self.scratch), "removed"), (str(self.other), "removed")]))
 
+    def test_the_space_freed_is_measured_on_the_volume_around_each_removal_and_the_run(self):
+        readings = iter([100, 100, 103, 103, 104, 104])
+        lines = []
+        removed = disk.delete(self.collect(), lambda category: self.collect(categories=[category]), self.ledger,
+                              out=lines.append, free=lambda: next(readings))
+        self.assertEqual(removed, 2)
+        entries = [json.loads(line) for line in self.ledger.read_text().splitlines()]
+        self.assertEqual([(entry["freeBefore"], entry["freeAfter"], entry["freed"]) for entry in entries],
+                         [(100, 103, 3), (103, 104, 1)])
+        self.assertIn("Freed 4 B of free space (100 B to 104 B free); the removed items' allocated size was 0 B",
+                      lines[-1])
+        lines.clear()
+        disk.delete(self.collect(), lambda category: self.collect(categories=[category]), self.ledger,
+                    out=lines.append, free=lambda: None)
+        self.assertIn("free space could not be read", lines[-1])
+
     def test_a_candidate_is_checked_again_before_removal(self):
         items = self.collect()
         process = disk.Process(77, "swift-build", cwd=str(self.scratch))

@@ -4375,8 +4375,9 @@ The standard limits suit a disk with room: a pool keeps a kind for a week after 
 unused runtime for two weeks. When the data volume has less than **50 GiB** free, `qk disk` shortens
 these idle limits so that it can delete more, aiming for **100 GiB** free:
 
-- **Least recently used first.** It finds the longest idle limit at which the candidates would bring
-  the volume to the goal. Items that have been idle longest become candidates first, whichever
+- **Least recently used first.** It finds the longest idle limit at which the candidates' allocated
+  size would bring the volume to the goal. Clones share blocks, so the space actually freed can fall
+  well short of the goal; `--delete` reports what it freed, and does not loosen further. Items that have been idle longest become candidates first, whichever
   category they are in. If no limit reaches the goal, it uses the shortest limits allowed.
 - **Only idle limits shorten.** Nothing that is in use, booted, reserved, named by a device record,
   pinned, an owner item or kept for any other reason becomes a candidate.
@@ -4411,9 +4412,12 @@ python3 scripts/qk disk --delete [--yes 'WHO ASKED']
   `Library`, while Git ignores it and tracks nothing in it and no other repository is nested
   around it. It logs every decision to
   `~/Library/Application Support/queuekeeper/disk-reclaimed.jsonl`.
-- **Report the space freed by measuring it.** Sizes are allocated sizes, and APFS clones share
-  blocks, so a removal can free less than its size. Compare `df -k /System/Volumes/Data` before and
-  after, and call the dry run's total "allocated size".
+- **It measures the space it frees.** Sizes are allocated sizes from `du`, and APFS clones share
+  blocks: a pool's members are clones of their template, so removing them can free far less than
+  their sizes add up to, and other work may write meanwhile. `--delete` reads the volume's free space
+  before and after each removal and records both, and the difference as `freed`, in its ledger
+  entry. Its last line gives the free space before and after the whole run beside the allocated size
+  removed. Report that measured figure, and call the dry run's total "allocated size".
 
 ### Free disk space
 

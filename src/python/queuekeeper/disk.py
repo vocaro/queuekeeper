@@ -611,7 +611,8 @@ class Pressure:
             return f"{short}, but the standard rules' candidates reach {human(self.goal)} free" if not self.needed \
                 else f"{short}, but no rule's idle limit can shorten further"
         return (f"{short}, so idle limits shorten to {age(self.cutoff)}, the least recently used first, "
-                f"to free {human(self.needed)} more toward {human(self.goal)}")
+                f"to remove {human(self.needed)} more of allocated size toward {human(self.goal)} free; clones share "
+                "blocks, so it can free less")
 
 
 def candidate_size(items):
@@ -776,13 +777,26 @@ def removal_entry(item, answered):
     return entry
 
 
-def delete(items, fresh, ledger, out=print, run=subprocess.run, approval=None, progress=quiet):
+def free_space(path=DATA_VOLUME):
+    """The free bytes of the volume that holds path, or None when it cannot be read."""
+    usage = volume_usage(path)
+    return usage[2] if usage else None
+
+
+def delete(items, fresh, ledger, out=print, run=subprocess.run, approval=None, progress=quiet, free=free_space):
     """Remove the candidates category by category, each checked again first, without asking: a
     candidate is what the rules prove nobody owns (the owner's decision, 2026-11-05). approval, the
     text given to --yes ("" when given bare), names in each ledger entry who asked for the run.
-    progress hears of each category's check and of each removal before it starts."""
-    removed = 0
+    progress hears of each category's check and of each removal before it starts.
+
+    The space freed is measured, not summed: free() reads the volume's free bytes before and after each
+    removal, which its ledger entry records, and around the whole run, which the last lines report beside the
+    allocated size removed. On 2026-11-27 a run removed 46.8 GiB of allocated size and the volume's usage fell
+    about 6 GiB: the simulators it removed were APFS clones of their templates, sharing most of their blocks,
+    and a gate wrote meanwhile (vocaro/queuekeeper#377)."""
+    removed, allocated = 0, 0
     answered = None if approval is None else "--yes" + (f": {approval}" if approval else "")
+    started = free()
     for category, title in CATEGORIES.items():
         group = [item for item in items if item.category == category and item.status == CANDIDATE]
         if not group: continue
@@ -802,11 +816,24 @@ def delete(items, fresh, ledger, out=print, run=subprocess.run, approval=None, p
             elif refused := removal_refused(item, run):
                 entry["outcome"] = "skipped: " + refused
             else:
+                before = free()
                 result = run(item.command, capture_output=True, text=True, timeout=3600, env=git_environment())
+                after = free()
                 entry["outcome"] = "removed" if result.returncode == 0 else f"failed ({result.returncode}): {result.stderr.strip()[:300]}"
+                entry["freeBefore"], entry["freeAfter"] = before, after
+                entry["freed"] = None if before is None or after is None else after - before
                 removed += result.returncode == 0
+                allocated += item.size if result.returncode == 0 else 0
             record_removal(ledger, entry, out)
     out(f"Removed {removed} items; the record of every decision is in {ledger}.")
+    ended = free()
+    if started is not None and ended is not None:
+        out(f"Freed {human(max(0, ended - started))} of free space ({human(started)} to {human(ended)} free); the "
+            f"removed items' allocated size was {human(allocated)}. APFS clones share blocks, and other work writes "
+            "meanwhile, so the two differ.")
+    else:
+        out(f"The volume's free space could not be read, so only the removed items' allocated size is known: "
+            f"{human(allocated)}.")
     return removed
 
 
