@@ -202,6 +202,20 @@ class PullRequestCheck(unittest.TestCase):
         self.pull_request(labels=[{"name": "ship-it"}])
         self.assertEqual(pull_requests.for_queue(self.project, 7, "ship-it")["label"], "ship-it")
 
+    def test_the_queue_rechecks_a_pull_request_before_pushing_it(self):
+        request = {"number": 7, "label": "queue"}
+        self.pull_request(labels=[{"name": "queue"}])
+        self.assertEqual(pull_requests.recheck(self.project, request, self.head), (True, None))
+        for fields, said in (({"labels": []}, "taken off"), ({"labels": [{"name": "queue"}], "state": "CLOSED"}, "closed"),
+                             ({"labels": [{"name": "queue"}], "headRefOid": "1" * 40}, "pushed again")):
+            with self.subTest(said=said):
+                self.pull_request(**fields)
+                approved, why = pull_requests.recheck(self.project, request, self.head)
+                self.assertIs(approved, False)
+                self.assertIn(said, why)
+        self.request.write_text("not json")
+        self.assertIsNone(pull_requests.recheck(self.project, request, self.head)[0])
+
     def test_a_head_origin_does_not_have_says_to_check_again(self):
         self.pull_request(headRefOid="0" * 40)
         with self.lane(): status, said = self.qk("7")

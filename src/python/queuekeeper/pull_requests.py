@@ -105,6 +105,26 @@ def for_queue(root, number, label):
             "headRefName": found.get("headRefName") or "", "url": found.get("url") or "", "label": label}
 
 
+def recheck(root, pull_request, head):
+    """Whether the queue may still push pull_request, queued at head, once its batch passed: (True, None); (False,
+    why) when it was closed, its head moved or its label was taken off while it waited; or (None, why) when gh could
+    not say, and nothing may be pushed until it can (vocaro/queuekeeper#376)."""
+    number, label = pull_request["number"], pull_request.get("label") or "queue"
+    status, out, err = run(["gh", "pr", "view", str(number), "--json", "state,headRefOid,labels"], root)
+    try: found = json.loads(out) if not status else None
+    except ValueError: found = None
+    if not isinstance(found, dict):
+        return None, f"gh could not say whether pull request {number} is still labeled {label}: {err or out or status}"
+    if found.get("state") != "OPEN":
+        return False, f"pull request {number} was {str(found.get('state')).lower()} while it waited in the queue"
+    if found.get("headRefOid") != head:
+        return False, (f"pull request {number} was pushed again while it waited, to {str(found.get('headRefOid'))[:12]}, "
+                       f"so what passed is not its head: queue it again with qk land --pr {number}")
+    if label not in {item.get("name") for item in found.get("labels") or [] if isinstance(item, dict)}:
+        return False, f"pull request {number}'s {label} label was taken off while it waited in the queue"
+    return True, None
+
+
 def merge_message(pull_request):
     """The message of the merge commit by which the queue lands a pull request, which GitHub reads as its merge."""
     title = pull_request.get("title", "").strip()

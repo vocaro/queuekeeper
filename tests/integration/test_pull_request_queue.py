@@ -21,6 +21,11 @@ class PullRequestQueue(Fixture):
         config = self.config()
         config["integration"] = "pull-request-queue"
         self.publish(config, "Land labeled pull requests through the queue")
+        # GitHub still approves each pull request when its batch passes, unless a test says otherwise; gh is never
+        # asked for real here.
+        approved = patch.object(pull_requests, "recheck", return_value=(True, None))
+        approved.start()
+        self.addCleanup(approved.stop)
 
     def pull(self, number, name, start="origin/main", content="x"):
         """A pull request's head, pushed as GitHub keeps it, and what qk land --pr would queue it with."""
@@ -64,6 +69,35 @@ class PullRequestQueue(Fixture):
         self.assertEqual([self.parents(commit)[1] for commit in landed], [first["head"], second["head"]])
         self.assertEqual(run(self.repo, "git", "rev-parse", "origin/main"), landed[1])
         self.assertEqual(self.parents(landed[1])[0], landed[0])
+
+    def test_a_pull_request_unlabeled_while_gated_is_taken_out_and_the_rest_lands(self):
+        first, second = self.pull(7, "one.txt"), self.pull(8, "two.txt")
+        ids = [self.queue(first), self.queue(second)]
+        why = "pull request 7's queue label was taken off while it waited in the queue"
+
+        def recheck(root, pull_request, head):
+            return (False, why) if pull_request["number"] == 7 else (True, None)
+        with patch.object(pull_requests, "recheck", recheck), contextlib.redirect_stdout(io.StringIO()):
+            self.work()
+        self.assertEqual((self.state(ids[0])["state"], self.state(ids[0])["removedWhy"]), ("removed", why))
+        # The other was gated again without it, and landed alone.
+        self.assertEqual(self.state(ids[1])["state"], "landed")
+        self.assertEqual(self.gates(), 2)
+        self.assertEqual({"one.txt", "two.txt"} & self.main_files(), {"two.txt"})
+
+    def test_nothing_is_pushed_while_gh_cannot_say_whether_a_pull_request_is_still_labeled(self):
+        identifier = self.queue(self.pull(7, "feature.txt"))
+        before = run(self.repo, "git", "rev-parse", "origin/main")
+        slept = []
+        with patch.object(pull_requests, "recheck", return_value=(None, "gh could not say")), \
+                patch.object(mq, "pause", slept.append), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.work(), 1)
+        # It tried the round again as a cause that clears by itself does, then held, having pushed nothing.
+        self.assertEqual(slept, list(mq.CLEARING_WAITS))
+        run(self.repo, "git", "fetch", "-q", "origin")
+        self.assertEqual(run(self.repo, "git", "rev-parse", "origin/main"), before)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertIn("gh could not say", mq.Queue(self.repo).held())
 
     def test_a_pull_request_that_conflicts_is_sent_back_and_main_is_untouched(self):
         request = self.pull(7, "shared.txt", content="theirs\n")
