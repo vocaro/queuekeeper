@@ -1012,6 +1012,15 @@ qk queue close --why "moving the queue's state" --for 2h && {  # refuse new entr
   `paths`, `words` and `next`. `qk queue doctor` reports it as a `shared checkout behind` finding
   when a person must settle it, and as a note when it waits only for runs from it to end. Both
   stop once the checkout reaches `origin/main`, whether a landing or a person moved it.
+  Session worktrees under the checkout's `.claude/worktrees/` never hold it back, even where
+  that folder is not ignored, and the fast-forward leaves them and their files as they are.
+
+- **A project's main checkout left behind is reported too.** A project's queue fast-forwards its
+  main checkout only when its `main` sets `"queue": {"followLandings": true}`. Without it, a
+  landing that leaves that checkout on `main` and behind `origin/main` is reported by
+  `qk queue status` as `the main checkout … is N commits behind origin/main`, with how to move it
+  and how to have it followed, and by `qk queue doctor` as a note. Sessions the Claude app starts
+  are cut from that local `main`, so they begin behind while it lags.
 
 - **A closure has a deadline.** It lasts an hour unless `--for DURATION` says otherwise, for
   example `--for 30m` or `--for 2h`. The longest allowed is 24 hours. When the deadline passes,
