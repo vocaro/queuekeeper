@@ -105,6 +105,23 @@ class EntryIdentifiers(Fixture):
         external, = self.add("codex/measurement")
         self.assertRegex(external, r"^qk\d{4}-measurement$")
 
+    def test_queue_entry_passes_over_an_issue_glued_to_another_repositorys_name(self):
+        # vocaro-engineering#67 is that repository's issue, which GitHub links to none here (#384).
+        run(self.repo, "git", "remote", "set-url", "--push", "origin", "git@github.com:vocaro/queuekeeper.git")
+        self.commit("a.txt", "claude/dispatch-retention-by-state")
+        run(self.repo, "git", "commit", "--amend", "-qm", "Keep dispatches by state",
+            "-m", "As (vocaro-engineering#67) asked. Closes vocaro-engineering#68.\n\n"
+                  "Refs vocaro/vocaro-engineering#559\nCo-Authored-By: A <a@example.com>")
+        identifier, = self.add("claude/dispatch-retention-by-state")
+        self.assertRegex(identifier, r"^qk\d{4}-claude-dispatch-retention-by-state$")
+
+        # A #N standing alone after punctuation is still this repository's.
+        self.commit("b.txt", "claude/layout")
+        run(self.repo, "git", "commit", "--amend", "-qm", "Adjust layout (#12)",
+            "-m", "Unlike vocaro-engineering#67, this one is ours.")
+        identifier, = self.add("claude/layout")
+        self.assertRegex(identifier, r"^qk\d{4}-issue-12-claude-layout$")
+
     def test_new_ids_are_descriptive_and_existing_ids_are_never_overwritten(self):
         self.commit("a.txt", "codex/fix-layout")
         queue = mq.Queue(self.repo)
@@ -6240,6 +6257,9 @@ class NegatedClaims(unittest.TestCase):
             with self.subTest(message):
                 self.assertEqual(landing_proofs.negated(message), [(1, message, issue)])
         self.assertEqual(landing_proofs.negated("Closes vocaro/BreezEPUB#43."), [])
+        # A #N glued to a name is no reference GitHub acts on, so its claim is none (#384).
+        self.assertEqual(landing_proofs.negated("This does not fix vocaro-engineering#43."), [])
+        self.assertEqual(landing_proofs.CLAIM.findall("Closes vocaro-engineering#43"), [])
         self.assertEqual(landing_proofs.negated("Fixes https://github.com/vocaro/BreezEPUB/issues/43"), [])
 
     def test_what_is_no_claim_passes(self):

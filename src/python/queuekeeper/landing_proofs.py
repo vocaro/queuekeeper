@@ -7,9 +7,10 @@ method in the toolkit's landed.sh (vocaro/vocaro-engineering#403)."""
 import re
 
 ANCESTOR, PATCH_EQUIVALENT, CONTENT_MERGED, RESOLVED = "ancestor", "patch-equivalent", "content-merged", "resolved"
-# An issue here (#N), one qualified by repository (owner/name#N), or its GitHub URL.
+# An issue here (#N), one qualified by repository (owner/name#N), or its GitHub URL. A #N glued to a word, as in
+# vocaro-engineering#67, names another repository's issue, so it is neither, as GitHub links it to none (#384).
 ISSUE_REFERENCE = re.compile(
-    r"(?:https://github\.com/([\w.-]+/[\w.-]+)/issues/|([\w.-]+/[\w.-]+)?#)(\d+)\b", re.I)
+    r"(?:https://github\.com/([\w.-]+/[\w.-]+)/issues/|([\w.-]+/[\w.-]+)#|(?<![\w./-])#)(\d+)\b", re.I)
 # A closing keyword GitHub acts on when a commit reaches the default branch: close, fix or resolve, in any tense.
 CLAIM = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+" + ISSUE_REFERENCE.pattern, re.I)
 # A claim GitHub acts on although its sentence denies it (vocaro-engineering#286): one of these within NEGATED_WITHIN
