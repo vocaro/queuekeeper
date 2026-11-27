@@ -75,6 +75,21 @@ class EntryIdentifiers(Fixture):
         identifier, = self.add("codex/layout")
         self.assertRegex(identifier, r"^qk\d{4}-issue-17-layout$")
 
+    def test_queue_entry_takes_a_trailer_paragraph_that_stands_apart_from_the_last(self):
+        run(self.repo, "git", "remote", "set-url", "--push", "origin", "git@github.com:vocaro/queuekeeper.git")
+        self.commit("a.txt", "claude/issue-159-fanout")
+        run(self.repo, "git", "commit", "--amend", "-qm", "Report a checkout left behind",
+            "-m", "Builds on what #357 reported.\n\nRefs #159\n\nCo-Authored-By: A <a@example.com>")
+        identifier, = self.add("claude/issue-159-fanout")
+        self.assertRegex(identifier, r"^qk\d{4}-issue-159-")
+
+        # A prose paragraph before the trailers is still the body, so its mention is passed over.
+        self.commit("b.txt", "claude/issue-160-fanout")
+        run(self.repo, "git", "commit", "--amend", "-qm", "Adjust layout",
+            "-m", "Later work waits in #18.\n\nRefs #17\n\nCo-Authored-By: A <a@example.com>")
+        identifier, = self.add("claude/issue-160-fanout")
+        self.assertRegex(identifier, r"^qk\d{4}-issue-17-")
+
     def test_queue_entry_only_takes_qualified_references_to_its_origin_repository(self):
         run(self.repo, "git", "remote", "set-url", "--push", "origin", "git@github.com:vocaro/EPUBLib.git")
         self.commit("a.txt", "codex/layout")

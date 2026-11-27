@@ -1145,6 +1145,8 @@ Entry IDs look like `qk7318-issue-123-fix-share-sheet`: `qk`, a random four-digi
 the branch name (without an `agent/` or `codex/` prefix) or of the commit subject. A commit's closing
 keyword, such as `Closes #123`, takes priority over other mentions, and then an issue named in a
 trailer at the end of a commit message, such as `Refs #123`, takes priority over one mentioned in its body.
+The trailers are the message's last paragraph and the paragraphs just before it made only of trailer lines,
+so `Refs #123` in a paragraph of its own above `Co-Authored-By:` still counts.
 
 ### A project's first landing
 
