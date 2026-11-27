@@ -105,6 +105,21 @@ def for_queue(root, number, label):
             "headRefName": found.get("headRefName") or "", "url": found.get("url") or "", "label": label}
 
 
+def labeled(root, label):
+    """The open pull requests on main that carry label, as for_queue returns them less their fetch: a list, or
+    raise ValueError when gh cannot list them. A draft is left out, as for_queue refuses it."""
+    status, out, err = run(["gh", "pr", "list", "--state", "open", "--base", "main", "--label", label, "--limit", "100",
+                            "--json", "number,headRefOid,headRefName,title,url,isDraft"], root)
+    if status: raise ValueError(f"gh could not list the pull requests labeled {label}: {err or out or f'exit {status}'}")
+    try: found = json.loads(out)
+    except ValueError as error: raise ValueError(f"gh answered with something other than JSON: {error}") from error
+    if not isinstance(found, list): raise ValueError("gh's list of pull requests is not a list")
+    return [{"number": item["number"], "head": item["headRefOid"], "title": item.get("title") or "",
+             "headRefName": item.get("headRefName") or "", "url": item.get("url") or "", "label": label}
+            for item in found if isinstance(item, dict) and item.get("number") and item.get("headRefOid")
+            and not item.get("isDraft")]
+
+
 def recheck(root, pull_request, head):
     """Whether the queue may still push pull_request, queued at head, once its batch passed: (True, None); (False,
     why) when it was closed, its head moved or its label was taken off while it waited; or (None, why) when gh could
@@ -258,11 +273,20 @@ def main(root, argv):
     checked.add_argument("number", nargs="?", type=int, help="the pull request; the current branch's without it")
     checked.add_argument("--lane", action="append", default=[], metavar="LANE",
                          help="a lane to run; repeat for more (default gate)")
+    actions.add_parser("queue", help="in a pull-request-queue project, queue each open pull request on main that "
+                       "carries the queue's label and is not queued at its head yet, as the queue's launcher does "
+                       "every two minutes")
     args = parser.parse_args(argv)
     status, top, err = git(root, "rev-parse", "--show-toplevel")
     if status:
         print(f"qk pr check: runs in a Git checkout: {err}", file=sys.stderr)
         return USAGE
+    if args.action == "queue":
+        from .merge_queue import queue_labeled
+        try: return queue_labeled(Path(top), say=say, quiet=False)
+        except ValueError as error:
+            print(f"qk pr queue: {error}", file=sys.stderr)
+            return FAILED
     try: return check(Path(top), args.number, args.lane)
     except ValueError as error:
         print(f"qk pr check: {error}", file=sys.stderr)

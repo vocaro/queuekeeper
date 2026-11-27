@@ -9878,6 +9878,71 @@ def refusal(tip, found, base, root):
     return words
 
 
+# Under the queue's directory: {pull request number: the head qk land --pr last refused}, so that a scan does not try a
+# refused pull request again until it is pushed (queue_labeled).
+REFUSED_PULL_REQUESTS = "pull-requests-refused.json"
+
+
+def scan_labeled(root):
+    """queue_labeled for a worker, whose own run it never stops: a failure is said and passed over."""
+    try: queue_labeled(root, say=lambda words: print(f"queue: {time.strftime('%H:%M:%S')} {words}", flush=True))
+    except Exception as error:  # noqa: BLE001 -- looking for labeled pull requests never stops the worker
+        print(f"queue: could not look for labeled pull requests: {error}", flush=True)
+
+
+def queue_labeled(root, say=print, quiet=True):
+    """In a pull-request-queue project, queue each open pull request on main that carries the queue's label and has
+    no entry at its head yet, waiting, landed, failed or in conflict (vocaro/queuekeeper#376): the label is then the
+    person's only step. An entry removed at that head does not count, so a label taken off and put back queues it
+    again, and taking it off is how a person stops it. A pull request refused at a head, as one holding a merge is, is
+    not tried again until its head moves. Other projects ask GitHub nothing. 0, or 1 when gh could not list them.
+    quiet leaves out a project that is not pull-request-queue and a scan that queued nothing."""
+    from . import pull_requests
+    # origin/main as last fetched says whether to ask GitHub at all, so that no other project's look reaches out.
+    try: config = config_at(root, MAIN)
+    except (ValueError, OSError, subprocess.SubprocessError): config = {}
+    if config.get("integration") == PULL_REQUEST_QUEUE:
+        try: config = config_at(root, MAIN) if fetch_main(root, say=lambda words: None) else {}
+        except (ValueError, OSError, subprocess.SubprocessError) as error:
+            if not quiet: say(f"cannot read origin/main's queuekeeper.json: {error}")
+            return 1
+    if config.get("integration") != PULL_REQUEST_QUEUE:
+        if not quiet: say(f"{config.get('name', 'this project')} does not land pull requests through the queue "
+                          f"(\"integration\": \"{PULL_REQUEST_QUEUE}\"), so nothing is asked of GitHub")
+        return 0
+    label = configuration.queue_label(config)
+    try: found = pull_requests.labeled(root, label)
+    except ValueError as error:
+        say(f"could not look for pull requests labeled {label}: {error}")
+        return 1
+    queue = Queue(root)
+    refused_file = queue.directory / REFUSED_PULL_REQUESTS
+    try: refused = json.loads(refused_file.read_text())
+    except (OSError, ValueError): refused = {}
+    if not isinstance(refused, dict): refused = {}
+    held = {(entry.get("branch"), entry.get("tip")) for entry in queue.all() if entry.get("state") != REMOVED}
+    queued = 0
+    for request in found:
+        number, head = request["number"], request["head"]
+        if (f"pull/{number}", head) in held or refused.get(str(number)) == head: continue
+        try:
+            request = pull_requests.for_queue(root, number, label)
+            identifier = add(root, request["head"], quiet_wait=True, pull_request=request)
+        except (ValueError, subprocess.SubprocessError, OSError) as error:
+            refused[str(number)] = head
+            say(f"pull request {number}, labeled {label}, was not queued at {head[:12]}: {error}")
+            continue
+        if identifier:
+            queued += 1
+            say(f"queued pull request {number}, labeled {label}, at {head[:12]} as {identifier}")
+    # What is refused stays refused only while its pull request is still labeled at that head.
+    current = {str(request["number"]): request["head"] for request in found}
+    refused = {number: head for number, head in refused.items() if current.get(number) == head}
+    with contextlib.suppress(OSError): refused_file.write_text(json.dumps(refused))
+    if not queued and not quiet: say(f"no pull request labeled {label} is waiting to be queued")
+    return 0
+
+
 def run(root, *, if_waiting=False):
     """Be the repository's worker until nothing waits. A second worker exits at once. Anything
     unexpected holds the queue, with every entry still waiting, rather than guessing at a verdict; the hold's
@@ -9892,6 +9957,8 @@ def run(root, *, if_waiting=False):
         with queue.worker(lock) as free:
             lock = None
             if not free: return 0
+            # The launcher's look, every two minutes, is when a label a person added is noticed (queue_labeled).
+            if if_waiting and not queue.held(): scan_labeled(root)
             if if_waiting and (queue.held() or not queue.waiting()): return 0
             # A gate its worker's crash left running holds a slot and admission this worker needs.
             remote.stop_dead_dispatches()
@@ -9939,6 +10006,8 @@ def run(root, *, if_waiting=False):
                              f"{sum(CLEARING_WAITS[:tries])}s did not clear it{passed_push(queue)}")
                 queue.hold(worded(kind, cause))
                 return 1
+        # A pull request labeled while this worker ran is this worker's to take as well (queue_labeled).
+        if not queue.held(): scan_labeled(root)
         # An entry added after the last look, while its adder found this worker running, is this
         # worker's to take: its adder's own worker has already exited.
         if queue.held() or not queue.waiting(): return 0

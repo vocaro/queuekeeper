@@ -15,7 +15,9 @@ from queuekeeper import merge_queue as mq, pull_requests
 from test_support.queue import Fixture, run
 
 
-class PullRequestQueue(Fixture):
+class PullRequestProject(Fixture):
+    """A pull-request-queue project, and pull requests pushed as GitHub keeps them."""
+
     def setUp(self):
         super().setUp()
         config = self.config()
@@ -44,6 +46,8 @@ class PullRequestQueue(Fixture):
     def parents(self, commit):
         return run(self.repo, "git", "rev-list", "--parents", "-n", "1", commit).split()[1:]
 
+
+class PullRequestQueue(PullRequestProject):
     def test_a_labeled_pull_request_lands_as_a_merge_of_its_head(self):
         request = self.pull(7, "feature.txt")
         before = run(self.repo, "git", "rev-parse", "origin/main")
@@ -155,7 +159,78 @@ class PullRequestQueue(Fixture):
             mq.land(self.repo, parser.parse_args(["--pr", "7", "HEAD"]))
 
 
+class LabeledPullRequestsQueued(PullRequestProject):
+    """The queue's launcher, and its worker after each round, queue what a person labeled (queue_labeled)."""
+
+    def scan(self, *found, refused=()):
+        """queue_labeled with gh listing found, each as for_queue gives it unless its number is in refused. Returns
+        (status, the numbers for_queue was asked for, what it said)."""
+        asked, said = [], []
+
+        def for_queue(root, number, label):
+            asked.append(number)
+            if number in refused: raise ValueError("it holds a merge")
+            return next(request for request in found if request["number"] == number)
+        with patch.object(pull_requests, "labeled", return_value=list(found)), \
+                patch.object(pull_requests, "for_queue", for_queue), patch.object(mq.Queue, "start"), \
+                contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            status = mq.queue_labeled(self.repo, say=said.append)
+        return status, asked, said
+
+    def test_a_labeled_pull_request_is_queued_once_at_its_head(self):
+        request = self.pull(7, "feature.txt")
+        status, asked, said = self.scan(request)
+        self.assertEqual((status, asked), (0, [7]))
+        [entry] = mq.Queue(self.repo).all()
+        self.assertEqual((entry["branch"], entry["tip"]), ("pull/7", request["head"]))
+        self.assertIn("queued pull request 7", said[0])
+        # Already queued at that head: not asked again. Pushed again: queued again, replacing it.
+        self.assertEqual(self.scan(request)[1], [])
+        moved = self.pull(7, "feature.txt", content="pushed again")
+        self.assertEqual(self.scan(moved)[1], [7])
+        self.assertEqual([entry["state"] for entry in mq.Queue(self.repo).all()], ["removed", "queued"])
+
+    def test_a_refused_pull_request_is_not_tried_again_until_it_moves(self):
+        request = self.pull(7, "feature.txt")
+        status, asked, said = self.scan(request, refused={7})
+        self.assertEqual((status, asked), (0, [7]))
+        self.assertIn("was not queued", said[0])
+        self.assertEqual(self.scan(request, refused={7})[1], [])
+        self.assertEqual(self.scan(self.pull(7, "feature.txt", content="rebased"), refused={7})[1], [7])
+
+    def test_an_entry_removed_at_its_head_is_queued_again_while_labeled(self):
+        request = self.pull(7, "feature.txt")
+        self.scan(request)
+        [entry] = mq.Queue(self.repo).all()
+        with contextlib.redirect_stdout(io.StringIO()): mq.remove(mq.Queue(self.repo), entry["id"])
+        self.assertEqual(self.scan(request)[1], [7])
+
+    def test_the_launchers_look_queues_and_lands_a_labeled_pull_request(self):
+        request = self.pull(7, "feature.txt")
+        with patch.object(pull_requests, "labeled", return_value=[request]), \
+                patch.object(pull_requests, "for_queue", return_value=request), patch.object(mq.Queue, "start"), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(mq.run(self.repo, if_waiting=True), 0)
+        [entry] = mq.Queue(self.repo).all()
+        self.assertEqual(entry["state"], "landed")
+        self.assertEqual(self.parents(entry["landedAs"])[1], request["head"])
+
+    def test_gh_that_cannot_list_is_said_and_queues_nothing(self):
+        said = []
+        with patch.object(pull_requests, "labeled", side_effect=ValueError("gh is not signed in")):
+            self.assertEqual(mq.queue_labeled(self.repo, say=said.append), 1)
+        self.assertIn("gh is not signed in", said[0])
+        self.assertEqual(mq.Queue(self.repo).all(), [])
+
+
 class DirectMainProject(Fixture):
+    def test_another_projects_look_asks_github_nothing(self):
+        with patch.object(pull_requests, "labeled") as listed:
+            self.assertEqual(mq.queue_labeled(self.repo, say=lambda words: None), 0)
+            with contextlib.redirect_stdout(io.StringIO()): mq.run(self.repo, if_waiting=True)
+        listed.assert_not_called()
+
+
     def test_qk_land_pr_is_refused_where_the_project_does_not_queue_pull_requests(self):
         parser = argparse.ArgumentParser()
         mq.land_arguments(parser)
