@@ -419,6 +419,10 @@ class PressureTests(Extended):
         # Changed 3 hours before the inventory: kept by the standard 24 hours, a candidate loosened.
         for folder in (self.scratch, self.other): os.utime(folder, (LATER - 3 * 3600, LATER - 3 * 3600))
         host = self.host()
+        # host_isolation turns the trigger off; this test takes the defaults.
+        defaults = patch.dict(os.environ, {"QUEUEKEEPER_DISK_LOW_GB": "50", "QUEUEKEEPER_DISK_GOAL_GB": "100"})
+        defaults.start()
+        self.addCleanup(defaults.stop)
         def run(*arguments, free=40):
             output = StringIO()
             with patch.object(disk.Host, "current", return_value=host), patch.object(disk.Sizes, "prime"), \
