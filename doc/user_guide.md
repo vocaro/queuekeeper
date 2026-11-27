@@ -120,6 +120,7 @@ A project chooses how its changes reach `main` with `integration` in `queuekeepe
 |---|---|---|
 | `"direct-main"`, the default | Agents run `qk land`; the merge queue tests each change with what lands ahead of it and pushes what passes | Everything in this guide |
 | `"pull-request"` | Agents push a branch and open a pull request; a person, or the project's own merge rules, merges it | Everything except the merge queue: lanes and admission, the build farm, simulators and devices, the dashboard and notifications |
+| `"pull-request-queue"` | Agents open a pull request; a person labels it, and the merge queue tests it with what lands ahead of it and merges what passes | Everything in this guide, with pull requests as the queue's entries ([The queue for pull requests](#the-queue-for-pull-requests)) |
 
 Choose `"pull-request"` when the project's `main` requires an approved pull request or checks
 that run on GitHub, or when you want to review every change before it lands:
@@ -188,6 +189,40 @@ the check started needs a new check. Nothing runs it on its own: the agents' rul
 `qk agents setup` writes tells them to run it after opening a pull request and after each push
 ([Tell your agents](#tell-your-agents)), and you can run it yourself.
 
+#### The queue for pull requests
+
+With `"integration": "pull-request-queue"` a person still reviews every pull request, and the
+merge queue does the rest: it tests each approved pull request together with the ones landing
+ahead of it, batches and bisects as it does for `qk land`, and merges what passes.
+
+```json
+"integration": "pull-request-queue",
+"pullRequests": {"label": "queue"}
+```
+
+- **Approval is a label.** When you have reviewed a pull request, add the label, `queue` unless
+  `pullRequests.label` names another, then queue it with `qk land --pr NUMBER`. A label works
+  where a GitHub review cannot: when agents push with your own account, you are the author, and
+  GitHub does not let an author approve their own pull request. `qk land --pr` refuses a pull
+  request that is closed, a draft, not based on `main`, or not labeled.
+- **It lands as a merge.** The queue merges the pull request's head into `main` with a merge
+  commit, `Merge pull request #N from BRANCH`, tests that, and pushes exactly what it tested.
+  GitHub marks the pull request merged, since its head is then on `main`. The entry's `landedAs`
+  is the merge commit.
+- **Its history must be a line from `main`.** A pull request with a merge in it, such as one
+  GitHub's *Update branch* made, is refused: rebase its branch onto `main` and push it.
+- **A conflict** with `main` or a pull request ahead sends it back, and is never settled by the
+  queue: rebase the branch and queue it again. Queuing the same pull request again replaces its
+  earlier entry.
+- **The queue's push must be allowed.** A ruleset that requires pull requests on `main` would
+  refuse the queue's push too, so give the account the queue pushes with a bypass.
+- **`qk land` without `--pr`** queues no branch in such a project, and says to open a pull
+  request instead.
+
+The queue does not yet notice a label removed or a push made while an entry waits, nor queue
+labeled pull requests by itself: take an entry out with `qk queue remove ID`, and run
+`qk land --pr` again after a push.
+
 ### Tell your agents
 
 Agents have to be told to queue their work, or to open a pull request, instead of pushing it.
@@ -239,6 +274,17 @@ pull request; a person reviews and merges it. Then run `qk pr check` as a backgr
 which tests the pull request on the shared Macs and posts the result on it, and follow it to its
 result: exit 0 means every lane passed, 1 that one failed, and 75 that one gave no verdict and
 needs another check. Check again after each push. Run tests and builds with `qk run LANE` or
+`qk admit -- COMMAND`, never bare, so that they wait their turn on the shared Macs. Run unittest
+suites with `qk unittest`, never `python3 -m unittest`. Send a long run's output to a file, never
+through `tail` or `head`, and trim when reading it; `qk progress` says how far a run has got.
+```
+
+A project with `"integration": "pull-request-queue"` gets:
+
+```markdown
+Never push to main or merge a pull request. Commit on your own branch, push it and open a
+pull request; a person reviews it and labels it for the merge queue, which tests it with the
+pull requests ahead of it and merges it. Run tests and builds with `qk run LANE` or
 `qk admit -- COMMAND`, never bare, so that they wait their turn on the shared Macs. Run unittest
 suites with `qk unittest`, never `python3 -m unittest`. Send a long run's output to a file, never
 through `tail` or `head`, and trim when reading it; `qk progress` says how far a run has got.

@@ -1,0 +1,135 @@
+"""A pull-request-queue project's merge queue: a labeled pull request lands on main as a merge commit whose second
+parent is its head, so GitHub marks it merged (vocaro/queuekeeper#376). gh is not asked here: qk land --pr's lookup
+(pull_requests.for_queue) is test_pull_requests's, and these tests give add what it returns."""
+import argparse
+import contextlib
+import io
+from pathlib import Path
+import sys
+import unittest
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
+import host_isolation  # noqa: F401 -- first, as every test module
+from queuekeeper import merge_queue as mq, pull_requests
+from test_support.queue import Fixture, run
+
+
+class PullRequestQueue(Fixture):
+    def setUp(self):
+        super().setUp()
+        config = self.config()
+        config["integration"] = "pull-request-queue"
+        self.publish(config, "Land labeled pull requests through the queue")
+
+    def pull(self, number, name, start="origin/main", content="x"):
+        """A pull request's head, pushed as GitHub keeps it, and what qk land --pr would queue it with."""
+        head = self.commit(name, f"feature-{number}", content=content, start=start)
+        run(self.repo, "git", "push", "-q", "-f", "origin", f"{head}:refs/pull/{number}/head")
+        return {"number": number, "head": head, "title": f"Add {name}", "headRefName": f"feature-{number}",
+                "url": f"https://github.com/o/r/pull/{number}", "label": "queue"}
+
+    def queue(self, request, checked=True):
+        unchecked = patch.object(mq, "check") if not checked else contextlib.nullcontext()
+        with patch.object(mq.Queue, "start"), patch("builtins.print"), unchecked:
+            mq.add(self.repo, request["head"], pull_request=request)
+        return next(entry["id"] for entry in reversed(mq.Queue(self.repo).all())
+                    if entry["branch"] == f"pull/{request['number']}")
+
+    def parents(self, commit):
+        return run(self.repo, "git", "rev-list", "--parents", "-n", "1", commit).split()[1:]
+
+    def test_a_labeled_pull_request_lands_as_a_merge_of_its_head(self):
+        request = self.pull(7, "feature.txt")
+        before = run(self.repo, "git", "rev-parse", "origin/main")
+        identifier = self.queue(request)
+        with contextlib.redirect_stdout(io.StringIO()): self.assertEqual(self.work(), 0)
+        entry = self.state(identifier)
+        self.assertEqual(entry["state"], "landed")
+        self.assertEqual(entry["pullRequest"]["number"], 7)
+        main = run(self.repo, "git", "rev-parse", "origin/main")
+        # main is the merge itself: first parent the main it was tested on, second the pull request's head.
+        self.assertEqual(self.parents(main), [before, request["head"]])
+        self.assertEqual(entry["landedAs"], main)
+        self.assertIn("feature.txt", self.main_files())
+        self.assertTrue(run(self.repo, "git", "log", "-1", "--format=%s", main).startswith(
+            "Merge pull request #7 from feature-7"))
+
+    def test_pull_requests_batched_together_each_land_as_their_own_merge(self):
+        first, second = self.pull(7, "one.txt"), self.pull(8, "two.txt")
+        ids = [self.queue(first), self.queue(second)]
+        with contextlib.redirect_stdout(io.StringIO()): self.assertEqual(self.work(), 0)
+        self.assertEqual(self.gates(), 1)
+        landed = [self.state(identifier)["landedAs"] for identifier in ids]
+        self.assertEqual([self.parents(commit)[1] for commit in landed], [first["head"], second["head"]])
+        self.assertEqual(run(self.repo, "git", "rev-parse", "origin/main"), landed[1])
+        self.assertEqual(self.parents(landed[1])[0], landed[0])
+
+    def test_a_pull_request_that_conflicts_is_sent_back_and_main_is_untouched(self):
+        request = self.pull(7, "shared.txt", content="theirs\n")
+        self.commit("shared.txt", "main-change", content="ours\n")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        before = run(self.repo, "git", "rev-parse", "origin/main")
+        identifier = self.queue(request, checked=False)
+        with contextlib.redirect_stdout(io.StringIO()): self.work()
+        entry = self.state(identifier)
+        self.assertEqual(entry["state"], "conflict")
+        self.assertIn("shared.txt", entry.get("failure", {}).get("message", "") or str(entry))
+        run(self.repo, "git", "fetch", "-q", "origin")
+        self.assertEqual(run(self.repo, "git", "rev-parse", "origin/main"), before)
+
+    def test_a_branch_is_refused_and_pointed_to_a_labeled_pull_request(self):
+        self.commit("a", "a")
+        with patch("builtins.print"), self.assertRaisesRegex(ValueError, r"qk land --pr NUMBER"):
+            mq.add(self.repo, "a")
+
+    def test_a_pull_request_with_a_merge_in_it_is_refused(self):
+        request = self.pull(7, "feature.txt")
+        self.commit("later.txt", "main-later")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        run(self.repo, "git", "checkout", "-q", "feature-7")
+        run(self.repo, "git", "merge", "-q", "--no-edit", "origin/main")
+        request["head"] = run(self.repo, "git", "rev-parse", "HEAD")
+        run(self.repo, "git", "push", "-q", "-f", "origin", f"{request['head']}:refs/pull/7/head")
+        with patch("builtins.print"), self.assertRaisesRegex(ValueError, "rebase its branch onto origin/main"):
+            mq.add(self.repo, request["head"], pull_request=request)
+        self.assertEqual(mq.Queue(self.repo).all(), [])
+
+    def test_landing_the_same_pull_request_again_replaces_its_entry(self):
+        first = self.queue(self.pull(7, "feature.txt"))
+        again = self.queue(self.pull(7, "feature.txt", content="pushed again"))
+        self.assertNotEqual(first, again)
+        self.assertEqual(self.state(first)["state"], "removed")
+
+    def test_qk_land_pr_asks_for_the_label_from_main_and_queues_the_head(self):
+        request = self.pull(7, "feature.txt")
+        parser = argparse.ArgumentParser()
+        mq.land_arguments(parser)
+        asked = []
+
+        def for_queue(root, number, label):
+            asked.append((number, label))
+            return request
+        with patch.object(pull_requests, "for_queue", for_queue), patch.object(mq.Queue, "start"), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(mq.land(self.repo, parser.parse_args(["--pr", "7"])), 0)
+        self.assertEqual(asked, [(7, "queue")])
+        [entry] = mq.Queue(self.repo).all()
+        self.assertEqual((entry["tip"], entry["branch"]), (request["head"], "pull/7"))
+        with contextlib.redirect_stderr(io.StringIO()), \
+                self.assertRaisesRegex(ValueError, "takes no commit"):
+            mq.land(self.repo, parser.parse_args(["--pr", "7", "HEAD"]))
+
+
+class DirectMainProject(Fixture):
+    def test_qk_land_pr_is_refused_where_the_project_does_not_queue_pull_requests(self):
+        parser = argparse.ArgumentParser()
+        mq.land_arguments(parser)
+        with patch.object(pull_requests, "for_queue") as asked, contextlib.redirect_stderr(io.StringIO()), \
+                self.assertRaisesRegex(ValueError, "pull-request-queue"):
+            mq.land(self.repo, parser.parse_args(["--pr", "7"]))
+        asked.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()

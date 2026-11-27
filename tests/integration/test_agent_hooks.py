@@ -231,6 +231,15 @@ class Guard(Repository):
         # The main checkout, whose queuekeeper.json does not say so, still lands through the queue.
         self.assertIsNotNone(self.decision("git push origin main", self.main))
 
+    def test_a_pull_request_queue_project_is_pointed_to_a_labeled_pull_request(self):
+        (self.linked / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "x",
+                                                                  "integration": "pull-request-queue"}))
+        found = self.hook("pre-tool-use", {"tool_name": "Bash", "tool_input": {"command": "git push origin main"},
+                                           "cwd": str(self.linked)})
+        why = found["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertIn("labels for the merge queue", why)
+        self.assertNotIn("qk land --wait", why)
+
     def test_other_tools_and_the_owners_switch_pass(self):
         found = self.hook("pre-tool-use", {"tool_name": "Write", "tool_input": {"command": "git push origin main"}})
         self.assertIsNone(found)

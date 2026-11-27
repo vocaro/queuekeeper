@@ -77,6 +77,41 @@ def pull_request(root, number):
     return found
 
 
+def for_queue(root, number, label):
+    """Pull request number of a pull-request-queue project as `qk land --pr` queues it, once its head is fetched:
+    {number, head, title, headRefName, url, label}. Raises ValueError unless it is open, not a draft, based on main
+    and labeled label, the person's approval (vocaro/queuekeeper#376)."""
+    status, out, err = run(["gh", "pr", "view", str(number), "--json",
+                            "number,state,isDraft,baseRefName,headRefOid,headRefName,title,labels,url"], root)
+    if status: raise ValueError(f"gh could not find pull request {number}: {err or out or f'exit {status}'}")
+    try: found = json.loads(out)
+    except ValueError as error: raise ValueError(f"gh answered with something other than JSON: {error}") from error
+    if found.get("state") != "OPEN":
+        raise ValueError(f"pull request {number} is {str(found.get('state')).lower()}, so there is nothing to queue")
+    if found.get("isDraft"): raise ValueError(f"pull request {number} is a draft: mark it ready for review first")
+    if found.get("baseRefName") != "main":
+        raise ValueError(f"pull request {number} targets {found.get('baseRefName')}, and the queue lands only on main")
+    if label not in {item.get("name") for item in found.get("labels") or [] if isinstance(item, dict)}:
+        raise ValueError(f"pull request {number} has no {label} label, by which a person approves it for the queue: "
+                         f"add the label once it is reviewed")
+    head = found.get("headRefOid")
+    if not head: raise ValueError(f"gh's answer names no head commit for pull request {number}")
+    status, _, err = git(root, "fetch", "-q", "origin", f"refs/pull/{number}/head")
+    if status: raise ValueError(f"could not fetch pull request {number} from origin: {err}")
+    if git(root, "cat-file", "-e", f"{head}^{{commit}}")[0]:
+        raise ValueError(f"origin has no commit {head[:12]}, pull request {number}'s head: it was pushed over since gh "
+                         "was asked, so land it again")
+    return {"number": found["number"], "head": head, "title": found.get("title") or "",
+            "headRefName": found.get("headRefName") or "", "url": found.get("url") or "", "label": label}
+
+
+def merge_message(pull_request):
+    """The message of the merge commit by which the queue lands a pull request, which GitHub reads as its merge."""
+    title = pull_request.get("title", "").strip()
+    return (f"Merge pull request #{pull_request['number']} from {pull_request.get('headRefName') or 'its branch'}"
+            + (f"\n\n{title}" if title else ""))
+
+
 def post(root, sha, lane, state, description):
     """Post a commit status on sha through gh, and say so. Returns whether GitHub took it."""
     if len(description) > DESCRIPTION_LIMIT: description = description[:DESCRIPTION_LIMIT - 1] + "…"

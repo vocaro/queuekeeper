@@ -62,6 +62,8 @@ from . import budgets, disk, plugins, farm, host_health, lane_results, landing_e
     resources
 from . import add_only_json, count_history, events, gate_reuse, git_state, health, landed_cleanup, pre_push, recovery, restartable, \
     worktree_ownership
+from . import config as configuration
+from .config import PULL_REQUEST_QUEUE
 from .config import DOCS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, QUICK_LIMIT, quick, quick_check, \
     PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission, implicit_command, launched, queuekeeper_at, \
     lane_to_run, load, names_path, needed_labels, parse, preflight, project_checkout, \
@@ -2525,11 +2527,23 @@ def _land(root, args, directory=None, details=None):
                              "there is another session's")
     if details is not None: details["root"] = target
     deadline = time.monotonic() + args.limit
+    pull_request = None
+    if getattr(args, "pr", None) is not None:
+        if args.reference: raise ValueError("qk land --pr NUMBER names the pull request, so it takes no commit")
+        from . import pull_requests
+        config = config_at(target, MAIN) if fetch_main(target, say=lambda words: None) else {}
+        if config.get("integration") != PULL_REQUEST_QUEUE:
+            raise ValueError(f"qk land --pr queues pull requests of a project with \"integration\": "
+                             f"\"{PULL_REQUEST_QUEUE}\" on origin/main, and {config.get('name', 'this project')} has "
+                             f"\"{config.get('integration', 'direct-main')}\" (user guide, Pull requests or the merge "
+                             "queue)")
+        pull_request = pull_requests.for_queue(target, args.pr, configuration.queue_label(config))
     while True:
         try:
-            identifier = add(target, args.reference or "HEAD", args.note, quiet_wait=args.wait,
-                             front=getattr(args, "front", False), no_gate=getattr(args, "no_gate", False),
-                             why=getattr(args, "why", None), alone=getattr(args, "alone", False))
+            identifier = add(target, pull_request["head"] if pull_request else args.reference or "HEAD", args.note,
+                             quiet_wait=args.wait, front=getattr(args, "front", False),
+                             no_gate=getattr(args, "no_gate", False), why=getattr(args, "why", None),
+                             alone=getattr(args, "alone", False), pull_request=pull_request)
             break
         except Refused as error:
             if details is not None:
@@ -2570,6 +2584,8 @@ def tidy_branch(root, identifier, say=print, detach_landed=False):
         queue = Queue(root)
         entry = queue.read(identifier)
         if not entry or not entry.get("branch") or entry["branch"] in ("HEAD", "main"): return None
+        # A pull request's branch is GitHub's, which deletes it on merge if the repository says so.
+        if entry.get("pullRequest"): return None
         # The worker's fetch may be in another checkout's refs: origin/main as this repository last fetched it may
         # lack the landing, which keeps the branch.
         try: fetch_main(root, say=lambda words: None)
@@ -2706,7 +2722,8 @@ def check_reserved_paths(waiting, paths, branch, tip):
                           f"holds {min(overlap)} with --alone until it settles or is removed", [entry["id"]])
 
 
-def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False, why=None, *, alone=False):
+def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False, why=None, *, alone=False,
+        pull_request=None):
     """Put the commits reference has and origin/main lacks in the queue, and return at once with the
     entry's ID, or None when there is nothing to queue. Whether it may be queued is what a round would
     find: origin/main's settings, and origin/main's lanes or, until it has any, the commit's, or the commit's
@@ -2721,7 +2738,12 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     While origin has no main at all, as a repository created empty has, the entry creates it: the worker gates its tip
     alone and pushes it only while main is still absent (Worker.first_landing, #10). Such an entry is refused unless
     its tip has a queuekeeper.json naming a gate lane, which gates it less what only main may say, and while another
-    entry waits, which creates main first; nor can it land without the gate."""
+    entry waits, which creates main first; nor can it land without the gate.
+
+    pull_request, which qk land --pr gives (pull_requests.for_queue), queues a labeled pull request of a
+    pull-request-queue project, whose round merges its head into main with a merge commit (Worker.pick) rather than
+    replaying its commits, so GitHub marks it merged (vocaro/queuekeeper#376). Its commits must be a line from
+    origin/main, with no merge in them, and it is named for its branch pull/NUMBER, so landing it again replaces it."""
     flags = ahead(front, no_gate, why, alone=alone)
     queue = Queue(root)
     present = fetch_main(root, say=lambda words: print(f"queue: {words}", file=sys.stderr))
@@ -2739,7 +2761,16 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     else:
         raise ValueError(f"neither origin/main nor {tip[:12]} has a queuekeeper.json, so the queue has nothing to run: "
                          "commit one with a gate lane and land that first (README, Getting started)")
-    if config.get("integration", "direct-main") != "direct-main":
+    integration = config.get("integration", "direct-main")
+    if integration == PULL_REQUEST_QUEUE and pull_request is None:
+        raise ValueError(f"{config.get('name')} lands pull requests a person labeled {configuration.queue_label(config)} "
+                         f"(\"integration\": \"{PULL_REQUEST_QUEUE}\" in queuekeeper.json), so qk land queues no "
+                         "branch: push it and open a pull request, and once it is labeled, `qk land --pr NUMBER` "
+                         "queues it")
+    if pull_request is not None and integration != PULL_REQUEST_QUEUE:
+        raise ValueError(f"qk land --pr queues pull requests of a project with \"integration\": "
+                         f"\"{PULL_REQUEST_QUEUE}\", and {config.get('name')} has \"{integration}\"")
+    if integration == "pull-request":
         raise ValueError(f"{config.get('name')} integrates through pull requests (\"integration\": \"pull-request\" in "
                          "queuekeeper.json), so qk land queues nothing: push the branch and open a pull request, and "
                          "run its checks with qk run LANE. To land through the merge queue instead, remove that "
@@ -2761,6 +2792,12 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     # can conflict with their own landed copies (#352).
     landed = already_landed(root, tip) if present else []
     replays = None
+    if pull_request is not None and (merges or landed):
+        raise ValueError(f"pull request {pull_request['number']} "
+                         + (f"holds {'merges' if len(merges) > 1 else 'a merge'}, {', '.join(m[:12] for m in merges)}"
+                            if merges else f"holds commits origin/main already has, {', '.join(c[:12] for c in landed)}")
+                         + ", which the queue cannot test as one merge yet: rebase its branch onto origin/main, push "
+                         "it, and queue it again")
     if merges or landed:
         # A branch refreshed by merging main, as the app's sync does, lands as its own commits replayed (#217), less
         # those origin/main holds as equal patches, which a rebase leaves out too (#352).
@@ -2788,6 +2825,7 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
         print("queue: the checkout has uncommitted changes, which stay out: only commits are queued", file=sys.stderr)
     branch = git(root, "symbolic-ref", "--short", "-q", "HEAD").stdout.strip() if reference == "HEAD" else \
         git(root, "rev-parse", "--abbrev-ref", reference).stdout.strip()
+    if pull_request is not None: branch = f"pull/{pull_request['number']}"
     with queue.locked():
         waiting = [entry for entry in queue.all() if entry["state"] in WAITING]
         same = next((entry for entry in waiting if entry["tip"] == tip), None)
@@ -2822,7 +2860,8 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     checked_before_running(root, tip, gating)
     # A landing that creates main has nothing to integrate onto, nor preflight lanes, which only main may name.
     if present:
-        check(root, queue, {"id": "new", "tip": tip, "commits": commits},
+        check(root, queue, {"id": "new", "tip": tip, "commits": commits,
+                            **({"pullRequest": pull_request} if pull_request else {})},
               [] if front or alone else round_order([entry for entry in waiting if entry not in replaced]), front)
         # Then the preflight lanes, on its commits replayed onto origin/main, which take seconds where a slip costs a
         # round.
@@ -2835,7 +2874,9 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     message = text(root, "log", "-z", "--format=%B", f"{base}..{tip}" if present else tip)
     entry = {"id": None, "tip": tip, "base": base, "commits": commits, "branch": branch or None, "note": note,
              "subject": subject, "state": QUEUED, "directory": str(root), **resources.coding_agent(),
-             **({"replays": replays} if replays else {}), **flags}
+             **({"replays": replays} if replays else {}),
+             **({"pullRequest": {key: pull_request[key] for key in ("number", "title", "headRefName", "url", "label")}}
+                if pull_request else {}), **flags}
     if alone: entry["reservedPaths"] = sorted(changed)
     # Fingerprinting is advisory. A missing patch ID must never stop a submission or its eventual settlement.
     with contextlib.suppress(OSError, subprocess.SubprocessError, UnicodeError):
@@ -5119,6 +5160,7 @@ class Worker:
     def reset(self, commit):
         """Exactly commit's tracked files. Ignored inputs a lane provisioned stay for the next round."""
         git(self.checkout, "cherry-pick", "--abort", hooks=False)
+        git(self.checkout, "merge", "--abort", hooks=False)
         git(self.checkout, "checkout", "--force", "--detach", commit, hooks=False, check=True)
         git(self.checkout, "clean", "-fdq", hooks=False, check=True)
 
@@ -5130,9 +5172,10 @@ class Worker:
         holds the entries applied before it, which a conflict names too, so that its author knows what to wait
         for before rebasing (#130, conflict)."""
         before = self.head()
+        self.kept = []  # each conflict it settled, which integrate records on the entry
+        if entry.get("pullRequest"): return self.merge(entry, before, ahead)
         if add_only is None:
             add_only = self.add_only_objects()
-        self.kept = []  # each conflict it settled, which integrate records on the entry
         for commit in entry["commits"]:
             previous = self.head() if add_only else None
             picked = git(self.checkout, "cherry-pick", commit, hooks=False)
@@ -5172,6 +5215,20 @@ class Worker:
                               for path in conflicted)
             return self.conflict(commit, conflicted, files or picked.stderr.strip(), ahead)
         return None
+
+    def merge(self, entry, before, ahead):
+        """Merge a pull request's head onto HEAD with a merge commit, which GitHub reads as the pull request's merge
+        once main holds it (vocaro/queuekeeper#376). None when it merges, else why, with HEAD as it was. Unlike a
+        replay, a conflict here is never settled: the pull request's author rebases it."""
+        from .pull_requests import merge_message
+        merged = git(self.checkout, "merge", "--no-ff", "--no-edit", "-m", merge_message(entry["pullRequest"]),
+                     entry["tip"], hooks=False)
+        if merged.returncode == 0: return None
+        conflicted = text(self.checkout, "diff", "--name-only", "--diff-filter=U").splitlines()
+        git(self.checkout, "merge", "--abort", hooks=False)
+        self.reset(before)
+        self.conflicted, self.hunks = conflicted, []
+        return self.conflict(entry["tip"], conflicted, ", ".join(conflicted) or merged.stderr.strip(), ahead)
 
     def conflict(self, commit, conflicted, files, ahead):
         """Why commit, of an entry behind ahead, did not apply in conflicted, files in words: what it conflicts with
@@ -6340,6 +6397,13 @@ class Worker:
         own = {}
         for identifier, _, commit in self.matched(batch, base, head):
             own[identifier] = (commit, own.get(identifier, (None, 0))[1] + 1)
+        # A pull request landed as the merge whose second parent is its head (merge, vocaro/queuekeeper#376).
+        merges = {line.split()[2]: line.split()[0] for line in text(
+            self.checkout, "rev-list", "--merges", "--parents", f"{base}..{head}" if base else head).splitlines()
+            if len(line.split()) == 3}
+        for entry in batch:
+            if entry.get("pullRequest") and entry["tip"] in merges:
+                own[entry["id"]] = (merges[entry["tip"]], own.get(entry["id"], (None, 0))[1] + 1)
         return own
 
     def matched(self, batch, base, head, commits_of=lambda entry: entry["commits"]):
@@ -6355,7 +6419,7 @@ class Worker:
             expected += [(entry["id"], commit, key)
                          for commit, key in keyed(text(self.checkout, "show", "-s", "--date=raw", form, *commits))]
         found, position = [], 0
-        for commit, key in keyed(text(self.checkout, "log", "--reverse", "--date=raw", form,
+        for commit, key in keyed(text(self.checkout, "log", "--reverse", "--topo-order", "--date=raw", form,
                                       f"{base}..{head}" if base else head)):
             match = next((index for index in range(position, len(expected)) if expected[index][2] == key), None)
             if match is None: continue
@@ -9977,6 +10041,8 @@ def closed(root, as_json=False):
 
 def land_arguments(parser):
     parser.add_argument("reference", nargs="?", help="the commit or branch; HEAD by default, and required with --repo")
+    parser.add_argument("--pr", type=int, metavar="NUMBER", help="in a pull-request-queue project, the pull request to "
+                        "queue, once a person has labeled it: the queue merges it into main with a merge commit")
     parser.add_argument("--repo", help="another project to land in: its path, or its name beside this project")
     parser.add_argument("--wait", action="store_true", help="follow it to its result and print the landed commit: "
                         "0 landed, 1 came back or was refused, as it conflicts with what is ahead of it, 75 held or "

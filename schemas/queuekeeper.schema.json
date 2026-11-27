@@ -121,8 +121,21 @@
     "integration": {
       "enum": [
         "direct-main",
-        "pull-request"
+        "pull-request",
+        "pull-request-queue"
       ]
+    },
+    "pullRequests": {
+      "description": "How a pull-request-queue project admits pull requests to its merge queue",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "description": "The label a person adds to a pull request to queue it (default queue)",
+          "type": "string",
+          "minLength": 1
+        }
+      }
     },
     "lanes": {
       "type": "object",

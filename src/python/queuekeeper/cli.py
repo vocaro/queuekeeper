@@ -1883,7 +1883,7 @@ def perform(argv, report):
                                 f"queuekeeper's default {processes.DEFAULT_LIMIT}s: {', '.join(unbounded)}; give each a timeout "
                                 "chosen from its measured time")
             if config.get("lanes") and "gate" not in config["lanes"] and not config.get("queue", {}).get("lanes") \
-                    and config.get("integration", "direct-main") == "direct-main":
+                    and config.get("integration", "direct-main") != "pull-request":
                 warnings.append("no lane is named gate, which qk land runs: name the lane holding "
                                 "what a commit must pass before it lands gate")
             # A queue.carryOverChecks entry limited to paths that never carry over (vocaro/queuekeeper#189).
