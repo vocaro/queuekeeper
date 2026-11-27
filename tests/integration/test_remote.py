@@ -7759,21 +7759,29 @@ exec {shlex.quote(real)} "$@"
                                for label, dispatcher in dispatchers.items()}
                 for label, dispatcher in dispatchers.items():
                     self.assertEqual(dispatcher.returncode, 0, outputs[label])
-                own = sorted(set((base / remote.DISPATCHES / "admit").iterdir()) - filed)
-                filed |= set(own)
-                self.assertEqual(len(own), 2)
+                # Each filed its own directory and named it. Both passed, so the one filed first goes when the
+                # other files, unless its process still runs then, and the other names it as removed (superseded).
+                own = {label: Path(re.search(r"this dispatch's alone in (\S+)", outputs[label])[1]).resolve()
+                       for label in dispatchers}
+                self.assertNotEqual(own["first"], own["second"])
                 receipts = {}
-                for directory in own:
+                for label, directory in own.items():
+                    if not directory.exists():
+                        other = outputs["second" if label == "first" else "first"]
+                        self.assertRegex(other, rf"remote: removed \S*{re.escape(directory.name)}: it passed")
+                        continue
                     receipt = json.loads((directory / "source.json").read_text())
-                    label = receipt["work"][-1].split("'")[1].split()[1]
+                    self.assertEqual(receipt["work"][-1], f"print('ran {label}')")
                     receipts[label] = receipt
                     self.assertEqual((directory / "output.log").read_text().splitlines()[-1], f"ran {label}")
                     self.assertEqual((receipt["commit"], receipt["result"]["exitStatus"]), (commit, 0))
                     # Each push succeeded, or lost the race for the commit's ref to the other's.
                     for sent in receipt["preparation"]["sends"]:
                         self.assertTrue(sent["status"] == 0 or "race" in sent, sent)
-                    self.assertIn(f"this dispatch's alone in {directory.resolve()}", outputs[label])
-                self.assertEqual(sorted(receipts), ["first", "second"])
+                self.assertTrue(receipts)
+                # The fresh round's passes went once the warm round filed, their processes ended.
+                self.assertFalse(any(path.exists() for path in filed))
+                filed |= set(own.values())
                 # The latest is one of them, whole, and nothing staged is left.
                 self.assertIn(json.loads((base / "admit/source.json").read_text()), list(receipts.values()))
                 self.assertEqual(sorted(path.name for path in base.iterdir()),
