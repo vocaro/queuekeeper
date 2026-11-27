@@ -355,10 +355,7 @@ class Host:
     cutoff: float = None
 
     def window(self, standard, floor=IDLE_FLOOR):
-        """The idle limit, in seconds, of a rule whose standard limit is standard: that, or under pressure the
-        loosened cutoff, never above standard and never below floor (or standard, when that is lower)."""
-        if self.cutoff is None: return standard
-        return max(min(floor, standard), min(standard, self.cutoff))
+        return window(self, standard, floor)
 
     @classmethod
     def current(cls, min_idle, development=None, run=subprocess.run):
@@ -369,6 +366,15 @@ class Host:
         return cls(home=home, development=Path(development or home / "Development"), now=time.time(),
                    min_idle=min_idle, processes=census(run), temp_roots=temp, offload_host=farm_mac(), offload_hosts=farm_macs(),
                    run=run)
+
+
+def window(host, standard, floor=IDLE_FLOOR):
+    """The idle limit, in seconds, of a rule whose standard limit is standard: that, or under pressure the host's
+    loosened cutoff, never above standard and never below floor (or standard, when that is lower). A host with no
+    cutoff, such as a test's stand-in, keeps the standard limits."""
+    cutoff = getattr(host, "cutoff", None)
+    if cutoff is None: return standard
+    return max(min(floor, standard), min(standard, cutoff))
 
 
 # What a plugin adds to the inventory (extend): the functions that list its items, those that name the
@@ -456,7 +462,7 @@ def cache_item(host, usage, sizes, category, path, reason):
     idle = host.now - last_activity(path)
     use = usage.of(path)
     if use: return Item(category, str(path), KEPT, "in use: " + described(use), sizes.of(path), None, idle)
-    if idle < host.window(host.min_idle):
+    if idle < window(host, host.min_idle):
         return Item(category, str(path), KEPT, f"{reason}, but changed {age(idle)} ago", sizes.of(path), None, idle)
     return Item(category, str(path), CANDIDATE, f"{reason}; no process; idle {age(idle)}", sizes.of(path),
                 ["rm", "-rf", "--", str(path)], idle)
