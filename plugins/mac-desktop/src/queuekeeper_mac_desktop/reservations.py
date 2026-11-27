@@ -678,23 +678,46 @@ def recoverable_lines(entries):
             for item in offload_host.recoverable(entries, offload_host.process_table(listed))]
 
 
-def status(record, describe=describe):
+def held_by(entry, owner):
+    """Whether owner holds entry: it names owner and is not released, whether held, orphaned or uncertain."""
+    return isinstance(entry, dict) and entry.get("ownerChatID") == owner and condition(entry) != "released"
+
+
+def status_owner(args):
+    """The owner `devices status` filters by: --owner's, or with --mine the default owner (default_owner, as
+    `simulator-pool release --mine` resolves it); None for every entry (vocaro/queuekeeper#372)."""
+    if getattr(args, "owner", None) is not None: return args.owner
+    if not getattr(args, "mine", False): return None
+    owner = default_owner()
+    if not owner:
+        raise ValueError(f"--mine names the default owner, ${OWNER} or the agent session, and neither is set: "
+                         "name it with --owner")
+    return owner
+
+
+def status(record, describe=describe, owner=None):
     """Print the record's revision, the foreground's condition, held or free, then every other entry's, each as
-    describe says it, and the held entries nothing keeps. Returns the record as read."""
+    describe says it, and the held entries nothing keeps. Given owner, only the entries owner holds (held_by),
+    and a line saying so when it holds none. Returns the record as read, every entry in it."""
     value = record.load()
     source = f" (from {OVERRIDE})" if os.environ.get(OVERRIDE) else ""
     print(f"Device record {record.path}{source}: revision {value.get('revision', 0)}, updated {value.get('updatedAt', 'never')}")
     if value.get(DEFERRED):
         print(f"Physical devices are reserved in {value[DEFERRED]}'s device record; this one refuses them")
+    entries = value["devices"] if owner is None else \
+        {key: entry for key, entry in value["devices"].items() if held_by(entry, owner)}
     # The owner's screen first, held or free, so a session about to take it sees who has it.
-    foreground = value["devices"].get(FOREGROUND)
+    foreground = entries.get(FOREGROUND)
     taken = takes_foreground()
-    print(describe(FOREGROUND, foreground, window=not taken) if foreground is not None else
-          f"{FOREGROUND}: free; " + ("queuekeeper reserves it for each run" if taken else
-                                     "agree a window with the owner, then reserve it until the window ends"))
-    for key, entry in value["devices"].items():
+    if foreground is not None:
+        print(describe(FOREGROUND, foreground, window=not taken))
+    elif owner is None:
+        print(f"{FOREGROUND}: free; " + ("queuekeeper reserves it for each run" if taken else
+                                         "agree a window with the owner, then reserve it until the window ends"))
+    for key, entry in entries.items():
         if key != FOREGROUND: print(describe(key, entry, waiting(value, key)))
-    for line in recoverable_lines(value["devices"]): print(line)
+    if owner is not None and not entries: print(f"{owner} holds no reservation in this record")
+    for line in recoverable_lines(entries): print(line)
     return value
 
 
@@ -722,7 +745,11 @@ def recover_there(args):
 def add_actions(commands, *, status_help="every entry's condition and the held entries nothing keeps"):
     """Add the actions every entry takes to commands, a parser's subparsers."""
     commands.add_parser("path", help="print the record's location")
-    commands.add_parser("status", help=status_help)
+    status_parser = commands.add_parser("status", help=status_help)
+    holder = status_parser.add_mutually_exclusive_group()
+    holder.add_argument("--owner", metavar="NAME", help="only the reservations NAME holds")
+    holder.add_argument("--mine", action="store_true", help=f"only the reservations the default owner holds: "
+                        f"${OWNER}, else the agent session")
     show = commands.add_parser("show", help="one entry with the revision a change must name")
     show.add_argument("key")
     reserve = commands.add_parser("reserve", help="claim a released or new entry")
@@ -782,7 +809,7 @@ def act(args, record, *, restore=None, said=None):
     if args.action == "path":
         print(record.path)
     elif args.action == "status":
-        status(record)
+        status(record, owner=status_owner(args))
     elif args.action == "show":
         report(args.key, record.entry(args.key))
     elif args.action == "reserve":

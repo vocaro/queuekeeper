@@ -2787,6 +2787,7 @@ actions for physical devices (`take`, `declare`, `defer`, `import`, `notificatio
 
 ```sh
 qk devices status                 # every entry, overdue ones, declarations and what each Mac reaches
+qk devices status --mine          # only the reservations you hold; --owner NAME, those NAME holds
 qk devices show iPhone            # one entry and its revision (0 if new)
 qk devices reserve iPhone --owner SESSION --revision N --device UDID \
   --purpose "…" --release-by 2026-10-21T18:00:00Z
@@ -2803,6 +2804,11 @@ qk devices release iPhone --owner SESSION --revision N --outcome "…" --restora
   then requires `--apps-quit` saying how it was quit.
 - **`--owner` names your session.** Where it is optional (`take`, `run`, `check`, the notification
   commands), it defaults to `QUEUEKEEPER_DEVICE_OWNER`, then the agent's session.
+- **Find what a session holds** with `status --owner NAME`, or `status --mine` for that same default
+  owner, as `simulator-pool release --mine` resolves it. Either lists only the entries the owner holds,
+  held, orphaned or uncertain, never a released one that names it as last owner, and says so when it
+  holds none; the record's line and what each Mac reaches are printed as without it. A subagent that
+  reserved under another name is found only by naming that name.
 - **Outside such a project**, run it through Queuekeeper's own checkout, as its recovery messages do:
   `python3 ~/Development/queuekeeper/bin/qk --project ~/Development/queuekeeper devices …`.
 
