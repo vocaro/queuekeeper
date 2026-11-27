@@ -43,8 +43,10 @@ push to without a prompt. Start with one Mac and [add more](doc/user_guide.md#ad
 later if builds need it. You can do each step below yourself, following the
 [user guide](doc/user_guide.md#set-up), or ask an agent to do it.
 
-1. **Install once per Mac.** Clone this repository into `~/Development/queuekeeper` and run
-   `python3 tools/install-checkout.py`. Keep the checkout: the installed `qk` command runs from it
+1. **Install once per Mac.** Clone this repository into `~/Development/queuekeeper`, check out the
+   [latest release](https://github.com/vocaro/queuekeeper/releases/latest)'s tag and run
+   `python3 tools/install-checkout.py`. Keep the checkout: the installed `qk` command and each
+   project's merge queue run that release until you check out another
    ([details](doc/user_guide.md#install)).
 2. **Configure each project.** Add a `queuekeeper.json` whose gate runs the project's checks, enable
    the [plugins](#plugins) it needs, and resolve what `qk doctor` reports. A project that merges

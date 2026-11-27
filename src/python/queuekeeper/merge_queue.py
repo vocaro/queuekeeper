@@ -4543,6 +4543,7 @@ class Worker:
         self.unlocked = set(progress.get("unlocked", ())) if progress else set()
         self.sent_unlocked = False  # whether the gate's last lane went as qk run --unlocked-screen (gate)
         self.code = running()  # the commit this worker's code came from, which toolkit compares with the copy's
+        self.following = "origin/main"  # what toolkit moves the copy to: origin/main, or the installed release
         self.rounds = 0  # the rounds this worker has finished, which run reads to count its tries
         self.deferred = None  # why follow last left the shared checkout behind for a run from it, or None
         self.holders = []  # the (process, how, path) that stays last found running from the shared checkout
@@ -4773,17 +4774,31 @@ class Worker:
         the worker runs from, and the stack's lanes ran on the tip of that landing, from their own checkout. So the
         worker that gated the batch below the stack settles the stack too, starts no stack of its own meanwhile, and
         moves in the next round, lagging origin/main by that one landing at most. A project's lanes do read its copy
-        (QUEUEKEEPER_ROOT), so a project's stack is still thrown away before its copy moves."""
+        (QUEUEKEEPER_ROOT), so a project's stack is still thrown away before its copy moves.
+
+        A project's queue whose toolkit is installed from a release, its main checkout detached at a release tag
+        such as v1.1.0 (git_state.release), follows that release instead of origin/main, with no fetch: the copy and
+        the worker stay on the release's commit until the owner checks out another, as the install steps say to
+        update, so that no landing on the toolkit's main reaches a project that installed a release
+        (vocaro/queuekeeper#351). The copy is a worktree of the same repository, so a worker moved to it still
+        finds the release through the main checkout. The toolkit's own queue always follows origin/main."""
         self.environment = environment()
         self.lagging = None
+        self.following = "origin/main"
         if os.environ.get(TOOLKIT_VARIABLE): return
         common = git(TOOLKIT_ROOT, "rev-parse", "--path-format=absolute", "--git-common-dir")
         if common.returncode: return  # a toolkit that is no repository has no origin/main to follow
         own = common.stdout.strip() == text(self.queue.main_checkout, "rev-parse", "--path-format=absolute",
                                             "--git-common-dir")
-        # The toolkit's own origin/main is the queue's, which the round has just fetched.
-        if not own: reach(TOOLKIT_ROOT, *FETCH, say=self.say, check=True)
-        head = text(TOOLKIT_ROOT, "rev-parse", MAIN)
+        installed = Path(common.stdout.strip())
+        tag = None if own or installed.name != ".git" else git_state.release(installed.parent)
+        if tag:
+            self.following = f"the release {tag}"
+            head = text(installed.parent, "rev-parse", "HEAD")
+        else:
+            # The toolkit's own origin/main is the queue's, which the round has just fetched.
+            if not own: reach(TOOLKIT_ROOT, *FETCH, say=self.say, check=True)
+            head = text(TOOLKIT_ROOT, "rev-parse", MAIN)
         if self.code and head != self.code and self.refuses(head): head = self.code
         if own and (not self.code or head == self.code): return
         if own and self.stacked:
@@ -4913,7 +4928,7 @@ class Worker:
         why = ("a worker moved to it before and stopped before it finished a round" if self.moved() == head
                else starts(TOOLKIT_ROOT, head))
         if why: self.say(f"staying on the toolkit at {self.code[:12]}, which this worker was started from, rather "
-                         f"than moving to {head[:12]}, origin/main: {why}")
+                         f"than moving to {head[:12]}, {self.following}: {why}")
         return why
 
     def moved(self):
@@ -4938,8 +4953,8 @@ class Worker:
         until a person resumed it (vocaro-engineering#173). Nothing of a round is in flight here: it runs before
         the round's entries are touched, so every entry's state is on disk, and the new process inherits the worker's
         lock, which is never free between the two. One that returns is a failed exec, which holds."""
-        self.say(f"moving to the toolkit at {head[:12]}, origin/main, from {self.code[:12]}, which this worker was "
-                 "started from: the next worker is started from the copy")
+        self.say(f"moving to the toolkit at {head[:12]}, {self.following}, from {self.code[:12]}, which this worker "
+                 "was started from: the next worker is started from the copy")
         self.drop_stacked("the worker moves to a newer toolkit")
         sys.stdout.flush()
         (self.queue.directory / MOVED).write_text(json.dumps({"from": self.code, "to": head, "at": time.time()}) + "\n")

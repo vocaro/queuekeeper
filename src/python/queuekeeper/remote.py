@@ -38,7 +38,8 @@ Mac it cannot reach as unchecked, and gives both the same simulator runtimes, as
 Before it sends work, and
 in `qk doctor`, it lists the processes there that earlier runs left running, which nothing
 stops, and fast-forwards another Mac's own toolkit checkout, ~/Development/queuekeeper, to
-origin/main when that checkout is on main with no uncommitted changes, saying why it leaves it otherwise:
+origin/main when that checkout is on main with no uncommitted changes, leaves one at a release tag where it is,
+and says why it leaves it otherwise:
 a dispatch goes on, and `qk doctor` reports an error (offload_host.update_toolkit, vocaro-engineering#203).
 """
 import ast
@@ -4835,9 +4836,10 @@ def sibling_requests(root):
 
 def toolkit_line(host, found, what="toolkit checkout"):
     """What is said of offload_host.update_toolkit's answer from host, and whether it is the owner's to decide:
-    (None, False) for a checkout already current, or one another connection is updating; (line, False) for one
-    it updated; (line, True) for one it left as it is, or could not update, and why."""
-    if not isinstance(found, dict) or found.get("state") in ("current", "busy"): return None, False
+    (None, False) for a checkout already current, one at a release tag, which the owner moves to the next release
+    (vocaro/queuekeeper#351), or one another connection is updating; (line, False) for one it updated;
+    (line, True) for one it left as it is, or could not update, and why."""
+    if not isinstance(found, dict) or found.get("state") in ("current", "release", "busy"): return None, False
     where = f"{host}'s {what} ~/{found.get('path') or offload_host.TOOLKIT_CHECKOUT}"
     if found.get("state") == "updated":
         count = found.get("behind")

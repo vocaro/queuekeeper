@@ -8829,6 +8829,32 @@ class ToolkitCopy(Fixture):
         self.assertEqual(self.seen.read_text().split("\n")[0], str(self.kit))
         self.assertFalse(self.copy.exists())
 
+    def test_a_toolkit_installed_from_a_release_stays_on_it_until_another_is_checked_out(self):
+        """A project whose Queuekeeper is a checkout of a release tag gates with that release, not with whatever
+        landed on the toolkit's main since (vocaro/queuekeeper#351)."""
+        released = run(self.kit, "git", "rev-parse", "HEAD")
+        run(self.kit, "git", "tag", "v1.0.0")
+        run(self.kit, "git", "checkout", "-q", "--detach", "v1.0.0")
+        landed = self.advance_origin("landed")
+        with contextlib.redirect_stdout(io.StringIO()): identifier, status = self.gate_once("a")
+        self.assertEqual((status, self.state(identifier)["state"], self.moves), (0, "landed", []))
+        self.assertEqual(self.seen.read_text().split("\n"), [str(self.copy), released, ""])
+        # It did not fetch either: what origin/main holds is no concern of a release's.
+        self.assertNotEqual(run(self.kit, "git", "rev-parse", "origin/main"), landed)
+        # The owner updates as the install steps say, to the next release, under a worker still running the first
+        # one's code, which follows it there.
+        run(self.kit, "git", "fetch", "-q", "--tags", "origin")
+        run(self.kit, "git", "tag", "v1.1.0", landed)
+        run(self.kit, "git", "checkout", "-q", "--detach", "v1.1.0")
+        started = mq.running
+        def running(): return released if mq.TOOLKIT_ROOT == self.kit else started()
+        with patch.object(mq, "running", running), contextlib.redirect_stdout(io.StringIO()) as said:
+            identifier, status = self.gate_once("b")
+        self.assertEqual((status, self.state(identifier)["state"], len(self.moves)), (0, "landed", 1))
+        self.assertIn(f"moving to the toolkit at {landed[:12]}, the release v1.1.0, from {released[:12]}",
+                      said.getvalue())
+        self.assertEqual(self.seen.read_text().split("\n"), [str(self.copy), landed, ""])
+
 
 class ToolkitsOwnWorker(Fixture):
     """The toolkit's own queue judging its main with the toolkit at origin/main, not the code its worker was started

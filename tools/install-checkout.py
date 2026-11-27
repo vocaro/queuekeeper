@@ -37,7 +37,7 @@ if sys.version_info < (3, 14):
 CHECKOUT = Path(__file__).resolve().parents[1]
 SOURCE = CHECKOUT / "src/python"
 sys.path.insert(0, str(SOURCE))
-from queuekeeper import resources
+from queuekeeper import git_state, resources
 from queuekeeper.checkout import source_paths
 
 COMMAND = "qk"
@@ -45,6 +45,17 @@ COMMAND = "qk"
 BIN = ("~/.local/bin", "~/bin", "/opt/homebrew/bin", "/usr/local/bin")
 # The line that marks a command as this script's, which alone it replaces or removes.
 MARK = "# Queuekeeper's command, written by tools/install-checkout.py"
+
+
+def update_advice(checkout=CHECKOUT):
+    """How this checkout is updated: to the next release when it is at a release tag, as the install steps leave it,
+    or along main otherwise (vocaro/queuekeeper#351)."""
+    tag = git_state.release(checkout)
+    if tag:
+        return (f"It is the release {tag}, which each project's merge queue runs too; to update, run `git fetch --tags` "
+                "in it and check out the newer release's tag.")
+    return ("It is no release, so each project's merge queue follows Queuekeeper's unreleased origin/main; "
+            "`git pull --ff-only` in it updates it, and checking out the latest release's tag keeps it on releases.")
 
 
 def on_path():
@@ -149,7 +160,7 @@ def main(arguments):
     staged.chmod(0o755)
     os.replace(staged, command)
     runs = (f"`{COMMAND}` command: {command} now runs this checkout with {sys.executable}. Keep the checkout where it "
-            f"is, since `{COMMAND}` runs from it; `git pull --ff-only` in it updates Queuekeeper.")
+            f"is, since `{COMMAND}` runs from it. {update_advice()}")
     next_step = (f"Next: run `{COMMAND} --help` to see its commands, then set up a project as \"Configure a project\" "
                  f"in {CHECKOUT / 'doc/user_guide.md'} describes.")
     if not found:

@@ -36,14 +36,20 @@ The Apple plugin has [requirements of its own](../plugins/apple/src/queuekeeper_
 
 ### Install
 
-Clone the repository and run its setup script with the Python that will run Queuekeeper:
+Clone the repository, check out the latest release, and run its setup script with the Python that
+will run Queuekeeper:
 
 ```sh
-git clone https://github.com/vocaro/queuekeeper.git
-cd queuekeeper
+git clone https://github.com/vocaro/queuekeeper.git ~/Development/queuekeeper
+cd ~/Development/queuekeeper
+git checkout "$(git describe --tags --abbrev=0 --match 'v[0-9]*' origin/main)"
 python3 tools/install-checkout.py
-qk --help
+qk --version
 ```
+
+`git describe` names the newest release tag on `main`, such as `v1.1.0`; the
+[releases page](https://github.com/vocaro/queuekeeper/releases) lists each release with its notes.
+Git says the checkout is in "detached HEAD" state, which is how a checkout of a tag looks.
 
 The script's first line says whether Queuekeeper is installed, and its last says what to do next.
 It:
@@ -55,7 +61,25 @@ It:
   that it is the Mac you work at. Macs you add later keep the default of 90%, so they take more
   of the load. A limits file that already sets `busyLimit` is left alone.
 
-Keep the checkout: `qk` runs it. To update, run `git pull --ff-only` in it.
+Keep the checkout: `qk` runs it, and so does each project's merge queue. While the checkout is at
+a release tag, a queue gates with that release and nothing landed on Queuekeeper's `main` since
+reaches it. To update, fetch and check out the newer release, then read its notes on the releases
+page for any step it needs:
+
+```sh
+cd ~/Development/queuekeeper
+git fetch --tags
+git checkout "$(git describe --tags --abbrev=0 --match 'v[0-9]*' origin/main)"
+```
+
+Each queue moves to the new release at its next round. Other Macs in a [build farm](#the-build-farm)
+run the release of the Mac that sends them work, and `qk doctor` leaves their own checkout at
+whatever release tag it holds.
+
+To follow unreleased changes instead, as Queuekeeper's own development does, keep the checkout on
+`main` and update with `git pull --ff-only`: each queue then moves to Queuekeeper's `origin/main`
+every round.
+
 `python3 tools/install-checkout.py --check` says whether everything is in place, and `--remove`
 takes it out again.
 

@@ -1,11 +1,14 @@
 """What Git says of a checkout: how far it is behind origin/main, whether it is off main, and its worktrees."""
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 
 UPSTREAM = "refs/remotes/origin/main"
 GIT_TIMEOUT = 10
+# A release's tag, as tools/release.py makes it: vX.Y.Z.
+RELEASE_TAG = re.compile(r"v(\d+)\.(\d+)\.(\d+)")
 
 
 # What each git that PATH finds answers to `git rev-parse --local-env-vars`: a list built into Git, so asked once in a
@@ -78,6 +81,23 @@ def off_main(toolkit):
     return (f"Queuekeeper loads from {toolkit}, {where}, not main, so this runs code main may not hold. Every "
             "project's launcher loads Queuekeeper from the shared checkout: put it back on main and work on "
             "Queuekeeper in a linked worktree (vocaro/queuekeeper#184)")
+
+
+
+def release(checkout):
+    """The release tag, such as v1.1.0, that checkout, a main checkout of Queuekeeper, is detached at, or None.
+
+    The install steps check out the newest release's tag (vocaro/queuekeeper#351). A checkout on a branch, main
+    among them, follows that branch, and one detached at a commit no release tag names is no release. When several
+    release tags name the commit, the highest is its release. HEAD is read from its file, so a checkout on a branch
+    costs no Git process."""
+    try:
+        head = (Path(checkout) / ".git/HEAD").read_text().strip()
+    except OSError:  # no repository, or a linked worktree, whose .git is a file
+        return None
+    if head.startswith("ref:"): return None
+    tags = [tag for tag in (git(checkout, "tag", "--points-at", "HEAD") or "").split() if RELEASE_TAG.fullmatch(tag)]
+    return max(tags, key=lambda tag: tuple(map(int, RELEASE_TAG.fullmatch(tag).groups())), default=None)
 
 
 def shared_changes(toolkit):
