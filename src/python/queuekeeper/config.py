@@ -200,7 +200,8 @@ def load(root):
 LANE_KEYS = frozenset({"command", "resource", "minimumTests", "timeout", "foreground", "here", "model", "display",
                        "budgetMinutes", "wholeHost", "apps", "unlockedScreen", "devices", "compileFirst",
                        "deviceRunMinutes", "stall", "unity", "arguments", "idioms", "dimensions", "exactTests",
-                       "failedTests", "labels", "sandbox", "timing", "notice", "disk", "inputs", "environmentInputs",
+                       "failedTests", "labels", "sandbox", "timing", "targetMinutes", "notice", "disk", "inputs",
+                       "environmentInputs",
                        "testAllowance"})
 # The lane keys above that a plugin shipped here adds (hooks.LANE_KEYS), by its module: a project that uses one
 # without the plugin is told which to switch on.

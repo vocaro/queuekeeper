@@ -289,6 +289,119 @@ class LaneRunTests(unittest.TestCase):
             self.assertIn("a has run 1m41s", found["words"])
 
 
+class TargetTests(unittest.TestCase):
+    """vocaro/queuekeeper#367: any lane may state how long it is meant to take, and a run that ends past it warns."""
+    project, run_lane = LaneRunTests.project, LaneRunTests.run_lane
+
+    def parsed(self, **lane):
+        return SettingTests.parsed(self, **lane)
+
+    def test_a_target_is_a_positive_number_of_minutes_inside_the_lanes_timeout(self):
+        self.assertEqual(self.parsed(targetMinutes=1.5, timeout=600)["targetMinutes"], 1.5)
+        self.assertEqual(self.parsed(targetMinutes=120)["targetMinutes"], 120, "inside the default timeout")
+        for lane, said in (({"targetMinutes": 0}, "positive number"), ({"targetMinutes": -1}, "positive number"),
+                           ({"targetMinutes": "5"}, "positive number"), ({"targetMinutes": True}, "positive number"),
+                           ({"targetMinutes": 11, "timeout": 600}, "test.targetMinutes 11 is past the lane's timeout "
+                                                                   r"of 600s \(10m00s\)"),
+                           ({"targetMinutes": 121}, "past the lane's default timeout of 7200s")):
+            with self.subTest(lane=lane), self.assertRaisesRegex(ValueError, said): self.parsed(**lane)
+        members = {"a": {"command": ["true"], "targetMinutes": 1}, "b": {"command": ["true"]}}
+        lanes = config.parse(json.dumps({"schemaVersion": 1, "name": "test", "lanes": {
+            **members, "both": {"parallel": ["a", "b"]}}}))["lanes"]
+        self.assertEqual(lanes["a"]["targetMinutes"], 1, "a group's member takes a target of its own")
+        with self.assertRaisesRegex(ValueError, "Lane group both takes only"):
+            config.parse(json.dumps({"schemaVersion": 1, "name": "test", "lanes": {
+                **members, "both": {"parallel": ["a", "b"], "targetMinutes": 1}}}))
+
+    def test_the_schema_takes_a_target_on_a_lane(self):
+        schema = json.loads((Path(cli.TOOLKIT_ROOT) / "schemas/queuekeeper.schema.json").read_text())
+        self.assertIn('"targetMinutes"', json.dumps(schema))
+        self.assertIn("targetMinutes", config.LANE_KEYS)
+        self.assertNotIn("targetMinutes", config.GROUP_KEYS)
+
+    def test_a_pace_warns_once_past_its_target_and_not_inside_it(self):
+        with tempfile.TemporaryDirectory() as tmp, history(tmp):
+            clock, live = Clock(), Path(tmp) / "lane.json.timing"
+            pace = lane_timing.Pace("lint", {"targetMinutes": 2}, "P", live=live, clock=clock)
+            self.assertIsNone(pace.base)
+            clock.now = 120
+            self.assertIsNone(pace.ended(), "a run that ends at its target says nothing")
+            self.assertEqual(pace.summary(), {"targetSeconds": 120})
+            clock.now = 150
+            said = pace.ended()
+            self.assertEqual(said, lane_timing.PREFIX + "warning: lint took 2m30s, past its target of 2m00s "
+                                                        "(targetMinutes 2)")
+            self.assertIsNone(pace.ended(), "once")
+            self.assertEqual(pace.summary()["pastTarget"], said.removeprefix(lane_timing.PREFIX + "warning: "))
+            found = lane_timing.live(Path(tmp) / "lane.json")
+            self.assertEqual((found["state"], found["targetSeconds"]), ("slow", 120))
+            self.assertEqual(merge_queue.timing_words({"timing": found}),
+                             "warning: lint took 2m30s, past its target of 2m00s (targetMinutes 2)")
+            untargeted = lane_timing.Pace("lint", {}, "P", live=None, clock=clock)
+            clock.now = 10_000
+            self.assertIsNone(untargeted.ended())
+            self.assertIsNone(untargeted.summary(), "a lane without a target or baseline keeps no timing")
+
+    def test_a_run_past_its_target_warns_with_its_lane_time_and_target(self):
+        with tempfile.TemporaryDirectory() as tmp, history(tmp), tempfile.TemporaryDirectory() as directory:
+            self.project(directory, {
+                "slow": {"command": [sys.executable, "-c", "import time; time.sleep(1.5); print('Ran 1 test')"],
+                         "targetMinutes": 0.01},
+                "failing": {"command": [sys.executable, "-c", "import time, sys; time.sleep(1.5); sys.exit(1)"],
+                            "targetMinutes": 0.01},
+                "inside": {"command": [sys.executable, "-c", "print('Ran 1 test')"], "targetMinutes": 5},
+                "plain": {"command": [sys.executable, "-c", "print('Ran 1 test')"]}})
+            status, said = self.run_lane(directory, "slow")
+            self.assertEqual(status, 0, "a target never fails a lane")
+            warning = lane_timing.PREFIX + "warning: slow took "
+            self.assertIn(warning, said)
+            self.assertIn("past its target of 1s (targetMinutes 0.01)", said)
+            build = Path(directory) / ".build/queuekeeper"
+            self.assertTrue(lane_timing.found_in((build / "slow/run.log").read_text())[-1].startswith(warning))
+            receipt = json.loads((build / "slow/source.json").read_text())
+            self.assertEqual(receipt["timing"]["targetSeconds"], 0.6)
+            self.assertIn("past its target", receipt["timing"]["pastTarget"])
+            status, said = self.run_lane(directory, "failing")
+            self.assertEqual(status, 1, said)
+            self.assertIn(lane_timing.PREFIX + "warning: failing took ", said, "a failing run that ends past it warns")
+            # Negative control: a run inside its target says nothing.
+            status, said = self.run_lane(directory, "inside")
+            self.assertEqual(status, 0, said)
+            self.assertNotIn(lane_timing.PREFIX, said)
+            self.assertEqual(lane_timing.found_in((build / "inside/run.log").read_text()), [])
+            self.assertEqual(json.loads((build / "inside/source.json").read_text())["timing"], {
+                "targetSeconds": 300, "seconds": unittest.mock.ANY})
+            # A lane without a target is as it was: no warning, and no timing in its receipt.
+            status, said = self.run_lane(directory, "plain")
+            self.assertEqual(status, 0, said)
+            self.assertNotIn(lane_timing.PREFIX, said)
+            self.assertNotIn("timing", json.loads((build / "plain/source.json").read_text()))
+
+    def test_a_groups_member_past_its_own_target_warns(self):
+        with tempfile.TemporaryDirectory() as tmp, history(tmp), tempfile.TemporaryDirectory() as directory:
+            wait = Path(tmp) / "both.json"
+            self.project(directory, {
+                "slow": {"command": [sys.executable, "-c", "import time; time.sleep(1.5); print('Ran 1 test')"],
+                         "targetMinutes": 0.01},
+                "quick": {"command": [sys.executable, "-c", "print('Ran 1 test')"], "targetMinutes": 5},
+                "both": {"parallel": ["slow", "quick"]}})
+            with patch.object(cli, "source_identity", return_value={"revision": "abc"}), \
+                    patch.dict(os.environ, {"QUEUEKEEPER_LANE_WAIT": str(wait)}), \
+                    contextlib.redirect_stdout(StringIO()) as out, contextlib.redirect_stderr(StringIO()) as error:
+                status = cli.main(["--project", directory, "run", "--here", "both"])
+            said = out.getvalue() + error.getvalue()
+            self.assertEqual(status, 0, said)
+            self.assertIn(lane_timing.PREFIX + "warning: slow took ", said)
+            self.assertNotIn("quick took", said)
+            lanes = Path(directory) / ".build/queuekeeper/both/lanes"
+            self.assertIn("past its target", lane_timing.found_in((lanes / "slow.log").read_text())[-1])
+            self.assertEqual(lane_timing.found_in((lanes / "quick.log").read_text()), [])
+            self.assertEqual(json.loads((lanes / "slow.json").read_text())["timing"]["targetSeconds"], 0.6)
+            live = lane_timing.live(wait)
+            self.assertEqual((live["lane"], live["state"]), ("both", "slow"))
+            self.assertIn("slow took ", live["words"])
+
+
 class StaleCommandTests(unittest.TestCase):
     def test_qk_timing_stale_marks_lanes_and_show_reports_them(self):
         with tempfile.TemporaryDirectory() as tmp, history(tmp), tempfile.TemporaryDirectory() as directory:

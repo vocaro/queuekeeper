@@ -232,6 +232,8 @@ def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_
                                       if "stall" in lane else {}),
                                    env=shims.environment(results_environment(results_directory / name)
                                        if results_directory is not None else os.environ, root))
+            # A member that ended by itself past its own target warns, as it would alone (vocaro/queuekeeper#367).
+            if timed is not None: timed.said_ended(log)
             status = judge(name, lane, status, log.read_text(errors="replace"))
         except processes.Canceled:
             # Only the group's first failure cancels a lane.
@@ -263,7 +265,7 @@ def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_
         if notice is not None:
             with contextlib.suppress(OSError), log.open("a") as written: written.write(notice + "\n")
         timing = {**timed.summary(), "seconds": round(time.monotonic() - timed.began, 1)} \
-            if timed is not None and timed.base is not None else None
+            if timed is not None and timed.summary() is not None else None
         # A passing member is one more in its own timing history on this Mac (lane_timing).
         if timed is not None and status == 0: timed.passed()
         seconds = conclude(name, lane, log, began, status, verdict_of(status), detail, timing)

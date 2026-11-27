@@ -1133,6 +1133,7 @@ The most useful settings:
 | `failedTests` | Lets the queue rerun a non-Python lane's failed tests ([When a batch fails](#when-a-batch-fails)) |
 | `stall` | Reports, and optionally stops, a lane that has gone quiet ([Time limits](#time-limits-and-the-gates-budget)) |
 | `timing` | Warns while a lane runs past its usual time, and optionally fails it past a threshold ([Time limits](#time-limits-and-the-gates-budget)) |
+| `targetMinutes` | How long the lane is meant to take, inside its `timeout`; a run that ends past it warns, naming the lane, its time and its target ([Time limits](#time-limits-and-the-gates-budget)) |
 | `testAllowance` | Seconds the lane's own script allows one test, shown in a direct run's clock on another Mac ([Following a direct run](#following-a-direct-run-on-another-mac)) |
 | `notice` | What an agent is shown when the lane's timeout, stall bound or timing threshold stops it |
 | `disk` | `{"startFreeGB": N}`, the lane's own free-space floor before admission ([Free disk space](#free-disk-space)) |
@@ -1716,6 +1717,33 @@ much slower is the change's to explain. A busy Mac can push a run past it too, s
 A lane group has no `timing` of its own. Each lane in it is timed against its own baseline as it
 runs in the group, with its own `timing`, and a passing lane adds to its own history. A lane past
 its threshold fails the group. The group's live record holds each lane's warning.
+
+**A lane's target.** The baseline is the lane's own history, so a lane that has always been slow, or
+that slows a little with each change, sets nothing off. `targetMinutes` states how long a lane is
+meant to take, inside its `timeout`, on any lane with a command, such as a member of the gate's
+group or a lane in `release.lanes`:
+
+```json
+"unit": {"command": ["..."], "timeout": 1800, "targetMinutes": 8}
+```
+
+Each whole run that ends by itself, passing or failing, past its target warns once, naming the
+lane, its time and its target:
+
+```text
+queuekeeper timing: warning: unit took 9m12s, past its target of 8m00s (targetMinutes 8)
+```
+
+The warning goes where the baseline's goes: the lane's log, `qk run`'s output, the run's receipt
+(`timing.targetSeconds` and `timing.pastTarget`), the live record that `qk queue status` and
+`qk land --wait` show while the gate runs, and `timing` in `qk queue result --json` and
+`qk land --wait --json`. A run inside its target says nothing, and a target never fails or stops a
+lane. A run that its timeout, stall bound or timing threshold stopped shows that limit's notice
+instead. A lane in a group is judged against its own target; a group takes no target of its own.
+The target may be fractional, and a target past the lane's `timeout`, or past the 2-hour default
+when the lane gives none, is refused. `qk doctor` does not judge targets. The gate's
+`budgetMinutes` stays apart: it judges the median of the gate's recent landings, while a target
+judges each run of its lane.
 
 **What a stopped lane tells an agent.** When a lane's `timeout`, stall bound or timing threshold
 stops it, it prints a notice to its log and its output:

@@ -2237,13 +2237,16 @@ def perform(argv, report):
                             why = unstartable(lane["command"], tree)
                             if why: return not_started(directory, receipt, args.lane, why)
                             try:
-                                return processes.run([*wrap, *lane_command(lane, extra, tree)], cwd=tree, log_path=directory / "run.log",
-                                                     timeout=left, on_stop=on_stop, env=env, kill_after=kill_after,
-                                                     pace=pace, **({"stall": lane["stall"],
-                                                                    "progress_path": directory / "results/progress.json"}
-                                                                   if "stall" in lane else {}))
+                                ended = processes.run([*wrap, *lane_command(lane, extra, tree)], cwd=tree, log_path=directory / "run.log",
+                                                      timeout=left, on_stop=on_stop, env=env, kill_after=kill_after,
+                                                      pace=pace, **({"stall": lane["stall"],
+                                                                     "progress_path": directory / "results/progress.json"}
+                                                                    if "stall" in lane else {}))
                             except processes.NotStarted as error:
                                 return not_started(directory, receipt, args.lane, str(error))
+                            # A run that ended by itself past its target warns (lane_timing, vocaro/queuekeeper#367).
+                            if timed["pace"] is not None: timed["pace"].said_ended(directory / "run.log")
+                            return ended
                         status = None
                         try:
                             with refusals or contextlib.nullcontext():
@@ -2512,7 +2515,7 @@ def perform(argv, report):
                 and not compile_failed(receipt) and not lane_report.records(directory / "results") else None
             if before is not None: status = lane_results.BEFORE_TESTS
             pace = timed["pace"]
-            if pace is not None and pace.base is not None:
+            if pace is not None and pace.summary() is not None:
                 receipt["timing"] = {**pace.summary(), "seconds": round(time.monotonic() - pace.began, 1)}
             # A passing whole run is one more in the lane's timing history on this Mac (lane_timing).
             if pace is not None and status == 0:

@@ -23,6 +23,14 @@ relative to its baseline ("timing": {"fail": "+25%"} or "+2m"), which applies on
 minSamples runs (MIN_SAMPLES by default): past it the lane is stopped, as a stall is, and fails, as a lane that got
 slower is a change's to explain. A run on a loaded host can go past it too, which is why it is opt-in.
 
+A lane may also state how long it is meant to take, "targetMinutes", the project's own word rather than the lane's
+history, so that a lane that has always been slow, or that slows a little with each change, is still told apart from
+its intended size (vocaro/queuekeeper#367). It never stops or fails a lane: a run that ends, passing or failing, past
+its target says a warning naming the lane, its time and its target (Pace.ended), in its log, on qk run's standard
+error and in the live record, where the p90's warning goes. A run that a limit stopped shows its limit's notice
+instead, and a run inside its target says nothing. The gate's budget (budgets.py) stays apart: it judges the median
+of the gate's landings, and a target each run. A target past the lane's timeout is refused (check).
+
 A limit that stops a lane, its timeout, its stall bound or its fail threshold, shows the lane's notice (DEFAULT_NOTICE
 unless the lane's "notice", or its stall's own, says otherwise), so that an agent fixes the slowness rather than
 raises the limit.
@@ -88,9 +96,21 @@ def threshold(text):
 
 
 def check(name, lane):
-    """A lane's timing and notice settings, as config.parse checks them."""
+    """A lane's timing, target and notice settings, as config.parse checks them."""
     if "notice" in lane and (not isinstance(lane["notice"], str) or not lane["notice"].strip()):
         raise ValueError(f"{name}.notice must be the words shown when a limit stops the lane")
+    if "targetMinutes" in lane:
+        from . import processes
+        target = lane["targetMinutes"]
+        if not number(target) or target <= 0:
+            raise ValueError(f"{name}.targetMinutes must be a positive number of minutes")
+        # A target past the timeout could never be passed by a run that ends by itself: the timeout stops it first.
+        timeout = lane.get("timeout", processes.DEFAULT_LIMIT)
+        if number(timeout) and target * 60 > timeout:
+            raise ValueError(f"{name}.targetMinutes {target:g} is past the lane's "
+                             + ("timeout" if "timeout" in lane else "default timeout")
+                             + f" of {timeout:g}s ({words(timeout)}): a target is the time the lane is meant to "
+                             "take inside its timeout, so lower the target or give the lane a longer timeout")
     if "timing" not in lane: return
     settings = lane["timing"]
     if not isinstance(settings, dict) or set(settings) - {"warn", "fail", "minSamples"}:
@@ -243,6 +263,12 @@ def fail_seconds(settings, found):
     return found["p90"] * (1 + amount / 100) if kind == "percent" else found["p90"] + amount
 
 
+def target_seconds(lane):
+    """The seconds lane is meant to take (targetMinutes), or None."""
+    target = lane.get("targetMinutes") if isinstance(lane, dict) else None
+    return target * 60 if number(target) and target > 0 else None
+
+
 def words(seconds):
     seconds = int(round(seconds))
     if seconds < 60: return f"{seconds}s"
@@ -265,6 +291,7 @@ class Pace:
         try: self.limit = fail_seconds(settings, self.base)
         except ValueError: self.limit = None
         self.setting = settings.get("fail")
+        self.target, self.overdue = target_seconds(lane), None
         self.live = live if live is not None else live_path()
         self.began, self.started, self.warned, self.failed = clock(), time.time(), None, None
         if self.live is not None and group is None: clear_live(self.live)
@@ -280,11 +307,33 @@ class Pace:
         return self.base is not None and (self.warns or self.limit is not None)
 
     def summary(self):
-        """What the receipt keeps of the run's timing."""
-        if self.base is None: return None
+        """What the receipt keeps of the run's timing: its baseline's and its target's, or None with neither."""
+        target = {**({"targetSeconds": round(self.target, 1)} if self.target else {}),
+                  **({"pastTarget": self.overdue} if self.overdue else {})}
+        if self.base is None: return target or None
         return {"p90Seconds": round(self.base["p90"], 1), "medianSeconds": round(self.base["median"], 1),
                 "samples": self.base["samples"], **({"failSeconds": round(self.limit, 1)} if self.limit else {}),
-                **({"warned": self.warned} if self.warned else {}), **({"failed": self.failed} if self.failed else {})}
+                **({"warned": self.warned} if self.warned else {}), **({"failed": self.failed} if self.failed else {}),
+                **target}
+
+    def ended(self):
+        """The run ended by itself, passing or failing: the warning line to log once when it took longer than its
+        target (targetMinutes), or None. A run that a limit stopped is not asked."""
+        if self.target is None or self.overdue is not None: return None
+        elapsed = self.clock() - self.began
+        if elapsed <= self.target: return None
+        self.overdue = (f"{self.name} took {words(elapsed)}, past its target of {words(self.target)} "
+                        f"(targetMinutes {self.lane['targetMinutes']:g})")
+        self.publish("slow", "; ".join(filter(None, (self.warned, self.overdue))))
+        return PREFIX + "warning: " + self.overdue
+
+    def said_ended(self, log):
+        """ended's warning, if any, at the end of the lane's log and on standard error, as observe's are said."""
+        said = self.ended()
+        if said is None: return None
+        with contextlib.suppress(OSError), Path(log).open("a") as written: written.write(said + "\n")
+        print(said, file=sys.stderr, flush=True)
+        return said
 
     def observe(self):
         """(the lines to log, or None; why the lane fails now, or None). A first look that finds the lane past both its
@@ -311,9 +360,12 @@ class Pace:
 
     def publish(self, state, said=None):
         if self.live is None: return
-        live = {"lane": self.name, "state": state, "startedAt": self.started, "written": time.time(),
-                "medianSeconds": round(self.base["median"], 1), "p90Seconds": round(self.base["p90"], 1),
-                "samples": self.base["samples"], **({"failSeconds": round(self.limit, 1)} if self.limit else {})}
+        # A lane with a target and no baseline yet publishes its target's warning alone.
+        base = {"medianSeconds": round(self.base["median"], 1), "p90Seconds": round(self.base["p90"], 1),
+                "samples": self.base["samples"]} if self.base is not None else {}
+        live = {"lane": self.name, "state": state, "startedAt": self.started, "written": time.time(), **base,
+                **({"failSeconds": round(self.limit, 1)} if self.limit else {}),
+                **({"targetSeconds": round(self.target, 1)} if self.target else {})}
         if said is not None: live["words"] = said
         if self.group is None:
             return write_live(self.live, {**live, "startedMonotonic": self.began, "timingReporter": os.getpid()})
