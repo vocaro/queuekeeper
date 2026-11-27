@@ -82,10 +82,9 @@ ROOT = "Development/queuekeeper-farm"
 # Persistent checkouts per project on another Mac; more wait for one to come free.
 CHECKOUTS = 4
 # Where each dispatch's own results stay, unique to it, under .build/queuekeeper/remote/DISPATCHES/NAME/,
-# beside NAME/, the latest; and how many of each name's stay: two for each run that can overlap another.
+# beside NAME/, the latest. Which stay is decided by state, never by age or count (superseded).
 DISPATCHES = ".dispatches"
 DISPATCH_HOST = "dispatch-host"
-DISPATCHES_KEPT = 2 * CHECKOUTS
 # Seconds ssh waits for each address another Mac's name resolves to before it tries the next.
 CONNECT_TIMEOUT = 10
 # ssh closes a connection that has heard nothing from another Mac for about ServerAliveInterval
@@ -1162,8 +1161,9 @@ def file_results(base, name, dispatch, staging=None, receipt=None, latest=True):
     """Keep a dispatch's results in a directory of their own under base/DISPATCHES/NAME/, named for
     the dispatch, and return it: staging's, moved there whole, or, for a dispatch that ran nothing,
     one that holds its receipt alone. With latest, base/NAME becomes a copy of them too, its files
-    linked to the dispatch's own, in place of the previous dispatch's at once. Each name keeps its
-    newest DISPATCHES_KEPT dispatches, naming each one removed.
+    linked to the dispatch's own, in place of the previous dispatch's at once, and each earlier
+    dispatch of the name that superseded says is done with goes, named as it goes: no age or count
+    decides it (vocaro-engineering#559).
 
     Dispatches of one name file their results in turn. Two that each removed base/NAME and renamed
     their own into its place could interleave, and the second rename then failed with "Directory not
@@ -1185,11 +1185,28 @@ def file_results(base, name, dispatch, staging=None, receipt=None, latest=True):
             with contextlib.suppress(FileNotFoundError): (base / name).rename(previous)
             fresh.rename(base / name)
             shutil.rmtree(previous, ignore_errors=True)
-        for old in sorted(runs.iterdir())[:-DISPATCHES_KEPT]:
-            shutil.rmtree(old, ignore_errors=True)
-            print(f"remote: removed {old}, each name keeping its newest {DISPATCHES_KEPT} dispatches", file=sys.stderr,
-                  flush=True)
+            for old in sorted(runs.iterdir()):
+                if old == own or not superseded(old): continue
+                shutil.rmtree(old, ignore_errors=True)
+                print(f"remote: removed {old}: it passed, and {own.name} has filed its results since", file=sys.stderr,
+                      flush=True)
     return own
+
+
+def superseded(run):
+    """Whether a dispatch's directory may go once a later dispatch of its name has filed its results as the latest
+    (file_results), by its state alone: its receipt says its work passed, and the process that sent it, which its
+    name ends with, has ended, so that nothing still files or reads it (lane_report reads its own after filing). A
+    failed, stopped or unmeasured dispatch, one that only prepared, a lost one with no receipt, and anything that
+    cannot be read stay until the worktree goes: they are what a session diagnoses (vocaro-engineering#559)."""
+    process = run.name[17:].split(".")[0] if run.name[16:17] == "-" else ""
+    if not process.isdigit() or lane_wait.alive(int(process)): return False
+    try: receipt = json.loads((run / "source.json").read_text())
+    except (OSError, ValueError): return False
+    result = receipt.get("result") if isinstance(receipt, dict) else None
+    if not isinstance(result, dict) or result.get("exitStatus") != 0 or result.get("stopped"): return False
+    if result.get("stage", "work") != "work" or result.get("outcome", "passed") != "passed": return False
+    return count_history.lane_receipt(receipt).get("outcome", "passed") == "passed"
 
 
 def passed(root, lane, revision="HEAD"):

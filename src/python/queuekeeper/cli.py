@@ -814,7 +814,9 @@ SCRIPT_RUNNERS = re.compile(r"(python|pypy)(\d+(\.\d+)*)?|(ba|z|da|k)?sh")
 # checkout holds .build/queuekeeper/LANE: .build/queuekeeper/RUNS/LANE/TIME-PID/, as each dispatch keeps its own
 # (remote.DISPATCHES); and how many of them each lane keeps.
 RUNS = ".runs"
-RUNS_KEPT = remote.DISPATCHES_KEPT
+# Eight: two for each of remote.CHECKOUTS, as remote dispatches once kept, before they were kept by state
+# (vocaro-engineering#559).
+RUNS_KEPT = 2 * remote.CHECKOUTS
 
 
 def lane_directory(stack, root, lane):

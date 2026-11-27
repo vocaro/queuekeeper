@@ -1069,7 +1069,8 @@ the Apple plugin on the sending Mac come from the same revision:
 ### What comes back
 
 - **Output** streams back as written, into `.build/queuekeeper/remote/LANE/`. Each dispatch also
-  has its own copy in `.build/queuekeeper/remote/.dispatches/LANE/TIME-PID/` (newest eight kept);
+  has its own copy in `.build/queuekeeper/remote/.dispatches/LANE/TIME-PID/`, kept by its state
+  (`remote.superseded`, see [the user guide](user_guide.md#following-a-direct-run-on-another-mac));
   `LANE/` holds whichever ended last, so summaries and plugin results are always read from the
   run's own dispatch.
 - **Exit status** is the work's, or 1 for a run stopped before the work began.

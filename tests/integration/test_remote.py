@@ -8162,17 +8162,62 @@ class DispatchResultsTests(unittest.TestCase):
         self.assertEqual(json.loads((record / "source.json").read_text()), {"run": "third"})
         self.assertEqual((self.base / "admit/output.log").read_text(), "ran second\n")
 
-    def test_each_name_keeps_its_newest_dispatches_and_names_each_one_removed(self):
+    def filed(self, stamp, result, latest=True, live=()):
+        """A dispatch of admit named for stamp and process 100, filed with a receipt whose result is result (none
+        when it is None) while the processes live still run; its directory."""
+        receipt = None if result is None else {"lane": "admit", "result": result}
+        with patch.object(remote.lane_wait, "alive", side_effect=lambda pid: pid in live):
+            return remote.file_results(self.base, "admit", stamp, None if not latest else self.staged(stamp),
+                                       receipt, latest=latest)
+
+    def kept(self):
+        return sorted(path.name for path in (self.base / remote.DISPATCHES / "admit").iterdir())
+
+    def test_a_passing_dispatch_goes_once_a_later_one_files_and_a_failed_one_stays_until_the_worktree_goes(self):
+        passing = {"exitStatus": 0, "receipt": {"outcome": "passed"}}
+        failures = {"failed": {"exitStatus": 1, "receipt": {"outcome": "failed"}},
+                    "unmeasured": {"exitStatus": lane_results.UNMEASURED, "receipt": {"outcome": "unmeasured"}},
+                    "stopped": {"exitStatus": 0, "stopped": True},
+                    "judged": {"exitStatus": 0, "receipt": {"outcome": "failed", "error": "ran fewer tests"}},
+                    "provision": {"exitStatus": 0, "stage": "provision"}}
         with contextlib.redirect_stderr(StringIO()) as error:
-            for number in range(remote.DISPATCHES_KEPT + 2):
-                remote.file_results(self.base, "admit", f"20261029T1200{number:02d}Z-1", self.staged(str(number)))
-        kept = sorted(path.name for path in (self.base / remote.DISPATCHES / "admit").iterdir())
-        self.assertEqual(kept, [f"20261029T1200{number:02d}Z-1" for number in range(2, remote.DISPATCHES_KEPT + 2)])
-        for number in (0, 1):
-            self.assertIn(f"remote: removed {self.base / remote.DISPATCHES / 'admit' / f'20261029T1200{number:02d}Z-1'}",
-                          error.getvalue())
-        self.assertEqual((self.base / "admit/output.log").read_text(), f"ran {remote.DISPATCHES_KEPT + 1}\n")
-        # Two dispatches in one second of one process each keep their own.
+            first = self.filed("20261029T120000Z-100", passing)
+            for number, result in enumerate(failures.values(), start=1):
+                self.filed(f"20261029T12000{number}Z-100", result)
+            self.filed("20261029T120006Z-100", None)  # lost: its log, and no receipt
+            self.filed("20261029T120007Z-100", passing)
+            # A record of a dispatch that ran nothing is no later result: the pass before it stays.
+            self.filed("20261029T120008Z-100", {"exitStatus": 1}, latest=False)
+            self.assertIn("20261029T120007Z-100", self.kept())
+            self.filed("20261029T120009Z-100", passing)
+        self.assertEqual(self.kept(), [f"20261029T12000{number}Z-100" for number in (1, 2, 3, 4, 5, 6, 8, 9)])
+        self.assertIn(f"remote: removed {first}: it passed, and 20261029T120001Z-100 has filed its results since",
+                      error.getvalue())
+        self.assertIn("removed " + str(first.with_name("20261029T120007Z-100")), error.getvalue())
+        self.assertEqual(error.getvalue().count("remote: removed"), 2)
+        # The latest is the newest filed, whatever became of the others.
+        self.assertEqual((self.base / "admit/output.log").read_text(), "ran 20261029T120009Z-100\n")
+
+    def test_a_passing_dispatch_stays_while_the_process_that_sent_it_runs(self):
+        # Overlapping dispatches of one lane: the older passes and files while the newer runs, then the newer files
+        # while the older's process still reads its own (lane_report); it goes at the next filing after that process.
+        passing = {"exitStatus": 0, "receipt": {"outcome": "passed"}}
+        with contextlib.redirect_stderr(StringIO()):
+            self.filed("20261029T120000Z-101", passing, live={101, 102})
+            self.filed("20261029T120001Z-102", passing, live={101, 102})
+            self.assertEqual(self.kept(), ["20261029T120000Z-101", "20261029T120001Z-102"])
+            # The newer, filed second, is the latest; the older, its process ended, goes when a third files.
+            self.filed("20261029T120002Z-103", {"exitStatus": 1}, live={103})
+        self.assertEqual(self.kept(), ["20261029T120002Z-103"])
+        # A name that says no process, or a receipt that cannot be read, stays.
+        with contextlib.redirect_stderr(StringIO()):
+            odd = self.filed("20261029T120003Z-later", passing)
+            unread = self.filed("20261029T120004Z-104", passing)
+            (unread / "source.json").write_text("{")
+            self.filed("20261029T120005Z-105", passing)
+        self.assertEqual(self.kept(), ["20261029T120002Z-103", odd.name, unread.name, "20261029T120005Z-105"])
+
+    def test_two_dispatches_in_one_second_of_one_process_each_keep_their_own(self):
         with contextlib.redirect_stderr(StringIO()):
             first = remote.file_results(self.base, "admit", "20261029T130000Z-1", self.staged("a"))
             second = remote.file_results(self.base, "admit", "20261029T130000Z-1", self.staged("b"))
