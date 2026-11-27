@@ -39,7 +39,10 @@ through `tail` or `head`, and trim when reading it; `qk progress` says how far a
 """
 PULL_REQUEST_RULE = """\
 Never push to main or merge a pull request. Commit on your own branch, push it and open a
-pull request; a person reviews and merges it. Run tests and builds with `qk run LANE` or
+pull request; a person reviews and merges it. Then run `qk pr check` as a background command,
+which tests the pull request on the shared Macs and posts the result on it, and follow it to its
+result: exit 0 means every lane passed, 1 that one failed, and 75 that one gave no verdict and
+needs another check. Check again after each push. Run tests and builds with `qk run LANE` or
 `qk admit -- COMMAND`, never bare, so that they wait their turn on the shared Macs. Run unittest
 suites with `qk unittest`, never `python3 -m unittest`. Send a long run's output to a file, never
 through `tail` or `head`, and trim when reading it; `qk progress` says how far a run has got.
