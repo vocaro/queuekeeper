@@ -328,6 +328,12 @@ inputs a provisioning lane made. Older `../NAME-queue` checkouts move here by th
   and the carry-over checks run with `QUEUEKEEPER_ROOT` naming it. A landed Queuekeeper commit so
   reaches every project's next round; a lagging shared checkout reaches none. A `QUEUEKEEPER_ROOT`
   set where the worker started is left alone.
+- **A Queuekeeper installed from a release stays on it.** When Queuekeeper's main checkout is
+  detached at a release tag such as `v1.1.0` (`git_state.release`), a project's worker moves its
+  copy to that tag's commit instead, without fetching, and follows the owner to the next tag they
+  check out. The toolkit's own queue always follows `origin/main`. Another Mac's own checkout at a
+  release tag is left there, as state `release`, which `qk doctor` does not report
+  ([#351](https://github.com/vocaro/queuekeeper/issues/351)).
 - **A fresh worker avoids an unlanded shared checkout.** A session's `qk land`, `qk queue wait` or
   `qk queue resume` starts the worker from the Queuekeeper that session loaded, unless that is a
   main checkout with uncommitted changes or off `main`. Then it starts from the queue's `TOOLKIT`
@@ -2384,7 +2390,8 @@ search completes the pre-landing consumer check.
 
 The merge queue judges every entry by `origin/main`'s `queuekeeper.json`, read with the strict `parse`
 (`merge_queue.main_config`), and a landed Queuekeeper commit reaches every project at once: each project's
-`qk land` runs the shared checkout, and each worker moves its copy to Queuekeeper's `origin/main` every round.
+`qk land` runs the shared checkout, and each worker moves its copy to Queuekeeper's `origin/main` every round
+(or, where Queuekeeper is installed from a release, to that release).
 A release that refuses a key some project's `main` still gives makes that `main` unreadable for every entry of
 that project (#295). So a `queuekeeper.json` key is renamed or retired in two landings with every project moved
 between them, as `extensions` became `plugins` (#48) and `queue.unread` replaced `queue.docsOnly` and

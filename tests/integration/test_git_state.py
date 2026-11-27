@@ -176,6 +176,34 @@ class OffMainTests(Fixture):
                                                     "work at "), error.getvalue())
 
 
+class ReleaseTests(Fixture):
+    """Which release a main checkout installed from a release tag is at (vocaro/queuekeeper#351)."""
+
+    def test_a_checkout_on_a_branch_is_no_release_even_at_a_tagged_commit(self):
+        self.git(self.checkout, "tag", "v1.0.0")
+        self.assertIsNone(git_state.release(self.checkout))
+
+    def test_a_checkout_detached_at_a_release_tag_names_the_highest(self):
+        self.git(self.checkout, "tag", "v1.9.0")
+        self.git(self.checkout, "tag", "v1.10.0")
+        self.git(self.checkout, "tag", "nightly")
+        self.git(self.checkout, "switch", "-q", "--detach", "v1.9.0")
+        self.assertEqual(git_state.release(self.checkout), "v1.10.0")
+
+    def test_a_commit_no_release_tag_names_is_no_release(self):
+        self.git(self.checkout, "tag", "nightly")
+        self.git(self.checkout, "tag", "v1.0")
+        self.git(self.checkout, "switch", "-q", "--detach", "HEAD")
+        self.assertIsNone(git_state.release(self.checkout))
+
+    def test_a_linked_worktree_and_a_folder_without_git_are_no_release(self):
+        self.git(self.checkout, "tag", "v1.0.0")
+        linked = self.root / "linked"
+        self.git(self.checkout, "worktree", "add", "-q", "--detach", str(linked), "v1.0.0")
+        self.assertIsNone(git_state.release(linked))
+        self.assertIsNone(git_state.release(self.root / "nowhere"))
+
+
 class SharedChangesTests(Fixture):
     def test_only_changes_in_the_loaded_main_checkout_warn(self):
         (self.checkout / ".git/info/exclude").write_text("ignored\n")

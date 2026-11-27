@@ -202,6 +202,28 @@ class Setup(unittest.TestCase):
             self.assertTrue((self.local / "qk").is_file())
             self.assertIn("Invalid resource limits", self.run_script("--check").stdout)
 
+    def test_its_update_advice_follows_the_release_the_checkout_is_at(self):
+        """The install steps check out a release's tag, which a `git pull` cannot update (vocaro/queuekeeper#351)."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("install_checkout", SCRIPT)
+        script = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(script)
+        checkout = self.home / "queuekeeper"
+        environment = {**{key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
+                       "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+        def git(*arguments):
+            subprocess.run(["git", "-C", str(checkout), *arguments], check=True, capture_output=True, env=environment)
+        checkout.mkdir()
+        git("init", "-q", "-b", "main")
+        git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "--allow-empty", "-m", "One")
+        git("tag", "v1.1.0")
+        self.assertIn("`git pull --ff-only` in it updates it", script.update_advice(checkout))
+        git("checkout", "-q", "--detach", "v1.1.0")
+        advice = script.update_advice(checkout)
+        self.assertIn("It is the release v1.1.0", advice)
+        self.assertIn("`git fetch --tags`", advice)
+        self.assertNotIn("git pull", advice)
+
     def test_a_mistaken_command_line_prints_the_usage(self):
         for arguments in (["--nope"], ["--check", "--remove"], ["--bin"]):
             done = self.run_script(*arguments)

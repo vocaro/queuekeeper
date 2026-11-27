@@ -4247,7 +4247,8 @@ def update_toolkit(request, home=None, seconds=UPDATE_SECONDS, listed=listing):
     landing (merge_queue's follow, vocaro-engineering#104): when it is on main, has no changed or untracked
     path, holds no commit origin/main lacks, is behind, and no process of this account runs from it (its
     working directory or an argument lies in it; running_from). Otherwise it is left as it is, with the
-    reason, which is its owner's to decide: state "missing", "left" (another branch, a detached HEAD,
+    reason, which is its owner's to decide: state "release" (detached at a release tag, named by "tag", where an
+    install from a release keeps it), "missing", "left" (another branch, a detached HEAD,
     changes, commits origin/main lacks, a process running from it) or "failed" (a fetch, listing or merge
     that failed or timed out).
 
@@ -4312,7 +4313,15 @@ def update_toolkit(request, home=None, seconds=UPDATE_SECONDS, listed=listing):
         if head is None: return ended("failed", why)
         found["head"] = head
         branch, _ = run("symbolic-ref", "--quiet", "--short", "HEAD")
-        if branch is None: return ended("left", f"its HEAD is detached at {head[:12]}, not on main")
+        if branch is None:
+            # A Mac installed from a release checks out its tag (vocaro/queuekeeper#351): that is where it belongs,
+            # and the owner moves it to the next release. The pattern is git_state.RELEASE_TAG's, which this file,
+            # run on its own on another Mac, cannot import.
+            tags, _ = run("tag", "--points-at", "HEAD")
+            releases = [tag for tag in (tags or "").split() if re.fullmatch(r"v\d+\.\d+\.\d+", tag)]
+            if releases:
+                return ended("release", tag=max(releases, key=lambda tag: tuple(map(int, tag[1:].split(".")))))
+            return ended("left", f"its HEAD is detached at {head[:12]}, not on main")
         if branch != "main": return ended("left", f"it is on branch {branch}, not main", branch=branch)
         # Staged or not, against HEAD, and untracked files that no .gitignore names: clean, as this Mac's
         # shared checkout must be to follow a landing (merge_queue's follow, vocaro-engineering#104).

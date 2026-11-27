@@ -10576,6 +10576,16 @@ class ToolkitUpdateTests(unittest.TestCase):
         self.assertEqual(self.head(), self.start)
         self.assertEqual(git(self.checkout, "rev-parse", "experiment"), self.start)
 
+    def test_a_checkout_at_a_release_tag_stays_there_and_says_nothing(self):
+        """A Mac installed from a release keeps its tag until the owner checks out the next (vocaro/queuekeeper#351)."""
+        git(self.checkout, "tag", "v1.0.0")
+        git(self.checkout, "checkout", "-q", "--detach", "v1.0.0")
+        land(self.seed)
+        found = self.update()
+        self.assertEqual((found["state"], found["tag"]), ("release", "v1.0.0"), found)
+        self.assertEqual(self.head(), self.start)
+        self.assertEqual(remote.toolkit_line("mini", found), (None, False))
+
     def test_commits_origin_lacks_leave_it_as_it_is_diverged_or_not(self):
         (self.checkout / "local.txt").write_text("local\n")
         local = commit_all(self.checkout)
