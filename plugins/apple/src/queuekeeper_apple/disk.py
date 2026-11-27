@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 import datetime
 import glob
 import json
+import math
 import os
 from pathlib import Path
 import plistlib
@@ -38,6 +39,11 @@ CATEGORIES = {"simulator": "Simulators", "runtime": "Simulator runtimes", "deriv
 # A runtime no device uses is removed once it has gone unused this long, as a pool member is pruned: a
 # lane may make its devices on it next.
 RUNTIME_IDLE_DAYS = 14
+# The shortest idle limits the loosened rules give, when the volume is short of space (disk.loosen): a runtime no
+# device uses, and a pool's whole kind, whose last member keeps the simulator tool's approval of its UDID and
+# whose template saves the next member a warm-up. A kind used today is in a lane's rotation.
+RUNTIME_IDLE_FLOOR = 86400.0
+KIND_IDLE_FLOOR = 86400.0
 UUID = re.compile(r"[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}", re.IGNORECASE)
 # Xcode names a workspace's DerivedData folder NAME-<28 letters>; other folders are shared caches.
 WORKSPACE_FOLDER = re.compile(r".+-[a-z]{28}")
@@ -135,10 +141,23 @@ def last_used(device, directory, now):
     return now - last_activity(directory) if directory and os.path.isdir(directory) else None
 
 
-def prune_command(pool, udid):
-    """Pruning reserves the member, checks it again and records the deletion."""
+def prune_command(pool, udid, kind_after=simulator_pool.KIND_PRUNE_AFTER):
+    """Pruning reserves the member, checks it again and records the deletion, with the kind's idle limit when
+    the volume's pressure shortened it."""
+    # Rounded down, so the prune's own check is never stricter than the inventory's.
+    hours = math.floor(kind_after / datetime.timedelta(hours=1) * 100) / 100
+    limit = [] if kind_after == simulator_pool.KIND_PRUNE_AFTER else ["--kind-idle-hours", f"{hours:.2f}"]
     return ["python3", str(TOOLKIT_ROOT / "bin/qk"), "simulator-pool", "--pool", pool, "--owner", "qk disk",
-            "prune", udid]
+            "prune", *limit, udid]
+
+
+def kind_limit(host):
+    """How long a pool's whole kind must be unused before its last member and template go: KIND_PRUNE_AFTER, or
+    shorter when the volume is short of space, in whole minutes, so the prune command says it exactly."""
+    standard = simulator_pool.KIND_PRUNE_AFTER.total_seconds()
+    seconds = host.window(standard, KIND_IDLE_FLOOR)
+    if seconds == standard: return simulator_pool.KIND_PRUNE_AFTER
+    return datetime.timedelta(minutes=int(seconds // 60))
 
 
 def pool_members(host):
@@ -172,7 +191,9 @@ def simulators(host, usage, sizes):
     unreadable = [path for path, text in host.records.items() if text is None]
     pooled, entries, templated = pool_members(host), record_entries(host), pool_templates(host)
     now = datetime.datetime.fromtimestamp(host.now, datetime.timezone.utc)
+    kind_after = kind_limit(host)
     items, listed = [], set()
+    by_udid, waiting = {}, []  # each device's item, and the templates kept only because their kind has members
     for runtime, devices in host.simulators.get("devices", {}).items():
         for device in devices:
             udid, name = device["udid"].upper(), device.get("name", "")
@@ -184,7 +205,11 @@ def simulators(host, usage, sizes):
             idle = last_used(device, directory, host.now)
             label = f"{udid} {name} ({runtime.rsplit('.', 1)[-1]})"
             def item(status, reason, command=None):
-                return Item("simulator", label, status, reason, size, command, idle, directory or None)
+                # Only a folder that exists now: --delete skips an item whose folder is gone (disk.delete).
+                made = Item("simulator", label, status, reason, size, command, idle,
+                            directory if directory and os.path.isdir(directory) else None)
+                by_udid[udid] = made
+                return made
             command = ["xcrun", "simctl", "delete", udid]
             # A record names a device by UDID or by its name as a JSON string.
             record = next((path for path, text in host.records.items() if text and (udid in text.upper() or
@@ -199,24 +224,26 @@ def simulators(host, usage, sizes):
             elif udid in pooled:
                 pool, member, every = pooled[udid]
                 allowed, why = simulator_pool.prunable(member, every, simulator_pool.entries_for(member, entries), now,
-                                                       idle_kinds=True)
+                                                       idle_kinds=True, kind_after=kind_after)
                 items.append(item(CANDIDATE, f"a member of the {pool} pool eligible for pruning: {why}",
-                                  prune_command(pool, udid)) if allowed else
+                                  prune_command(pool, udid, kind_after)) if allowed else
                              item(KEPT, f"a member of the {pool} pool, kept: {why}"))
             elif udid in templated:
                 pool, template = templated[udid]
                 # Pruning the last member of a kind unused for 7 days deletes the kind's template with it.
+                kind = [member for member in simulator_pool.members(pool, host.simulators) if member.kind == template.kind]
                 allowed, why = simulator_pool.template_prunable(
-                    template, simulator_pool.members(pool, host.simulators),
-                    simulator_pool.entries_for(template, entries), now)
+                    template, kind, simulator_pool.entries_for(template, entries), now, kind_after)
                 gone = "unavailable, its runtime gone" if not device.get("isAvailable", True) else why
                 items.append(item(CANDIDATE, f"the {pool} pool's warmed template of its kind, {gone}; the next new "
-                                             "member of the kind warms another", prune_command(pool, udid))
+                                             "member of the kind warms another", prune_command(pool, udid, kind_after))
                              if allowed else
                              item(KEPT, f"the {pool} pool's warmed template of its kind, kept: {why}"))
+                if not allowed and kind and host.cutoff is not None:
+                    waiting.append((items[-1], pool, template, kind))
             elif record: items.append(item(KEPT, f"named in the device record {record}"))
             elif disposable_name(name):
-                if idle is not None and idle >= host.min_idle:
+                if idle is not None and idle >= host.window(host.min_idle):
                     gone = "" if device.get("isAvailable", True) else "; unavailable, its runtime is gone"
                     items.append(item(CANDIDATE, f"a disposable device (unique name) left shut down and unreferenced; "
                                                  f"last used {age(idle)} ago{gone}", command))
@@ -240,6 +267,20 @@ def simulators(host, usage, sizes):
                                   "in use: " + described(use) if use else "a device directory CoreSimulator no longer lists",
                                   sizes.of(directory), None if use else ["rm", "-rf", "--", str(directory)],
                                   host.now - last_activity(directory)))
+    # Under pressure a template goes with its kind when every member of the kind is a candidate: pruning the last
+    # member prunes the template, which must then be unused as long. Templates are listed after the members, so
+    # --delete reaches them last and skips one already gone with its kind.
+    for kept, pool, template, kind in waiting:
+        if not all(by_udid.get(member.udid) and by_udid[member.udid].status == CANDIDATE for member in kind): continue
+        allowed, why = simulator_pool.template_prunable(template, [], simulator_pool.entries_for(template, entries),
+                                                        now, kind_after)
+        if not allowed: continue
+        kept.status, kept.command = CANDIDATE, prune_command(pool, template.udid, kind_after)
+        kept.reason = (f"the {pool} pool's warmed template of its kind, every member of which is a candidate, so it "
+                       f"goes with the last: {why.replace('its kind has no member left and it is', 'it is')}; the "
+                       "next new member of the kind warms another")
+    last = {id(by_udid[udid]) for udid in templated if udid in by_udid}
+    items.sort(key=lambda found: id(found) in last)
     return items
 
 
@@ -388,6 +429,8 @@ def listed_runtimes(host):
         used[runtime] = used.get(runtime, 0) + len(devices)
     chosen = chosen_builds(host)
     unreadable = [path for path, text in host.records.items() if text is None]
+    limit = host.window(RUNTIME_IDLE_DAYS * 86400, RUNTIME_IDLE_FLOOR)
+    within = f"{RUNTIME_IDLE_DAYS} days" if limit == RUNTIME_IDLE_DAYS * 86400 else age(limit)
     items = []
     for key, image in host.runtimes.items():
         identifier = image.get("runtimeIdentifier", "")
@@ -408,25 +451,25 @@ def listed_runtimes(host):
             elif record: items.append(Item("runtime", label, KEPT, f"{superseded}, but the device record {record} names it", size))
             elif image.get("deletable") is False:
                 items.append(Item("runtime", label, KEPT, f"{superseded}, but not deletable: it came with Xcode", size))
-            elif idle is not None and idle < RUNTIME_IDLE_DAYS * 86400:
+            elif idle is not None and idle < limit:
                 items.append(Item("runtime", label, KEPT, f"{superseded}, but used {age(idle)} ago, within "
-                                  f"{RUNTIME_IDLE_DAYS} days", size, idle=idle))
+                                  f"{within}", size, idle=idle))
             else:
                 items.append(across(host, Item("runtime", label, CANDIDATE, f"{superseded}, so no device runs on it; "
                                   f"no pin or reservation names it; last used {stamp or 'never'}, over "
-                                  f"{RUNTIME_IDLE_DAYS} days ago or never", size, command, idle), build))
+                                  f"{within} ago or never", size, command, idle), build))
         elif used.get(identifier):
             items.append(Item("runtime", label, KEPT, f"{used[identifier]} devices use it" +
                               (f": the build of its identifier {chosen[identifier][1]}" if identifier in chosen else ""), size))
         elif build in host.pinned: items.append(Item("runtime", label, KEPT, f"no device uses it, but {host.pinned[build]}", size))
         elif image.get("deletable") is False:
             items.append(Item("runtime", label, KEPT, "not deletable: it came with Xcode", size))
-        elif idle is not None and idle < RUNTIME_IDLE_DAYS * 86400:
+        elif idle is not None and idle < limit:
             items.append(Item("runtime", label, KEPT, f"no device uses it, but it was used {age(idle)} ago, within "
-                              f"{RUNTIME_IDLE_DAYS} days; a lane may create its devices on it next", size, idle=idle))
+                              f"{within}; a lane may create its devices on it next", size, idle=idle))
         else:
             items.append(across(host, Item("runtime", label, CANDIDATE, f"no device uses it; last used "
-                                           f"{stamp or 'never'}, over {RUNTIME_IDLE_DAYS} days ago or never; xcodebuild "
+                                           f"{stamp or 'never'}, over {within} ago or never; xcodebuild "
                                            "downloads it again", size, command, idle), build))
     return items
 

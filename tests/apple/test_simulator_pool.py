@@ -315,6 +315,16 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(self.pool.prune(udids={left}), ["Project Duo 3"])
         self.assertEqual(self.simctl.deleted(), [left])
 
+    def test_a_shorter_kind_limit_lets_the_lowest_member_go_sooner_but_never_within_the_hour(self):
+        # `qk disk` passes a shorter limit when the volume is short of space.
+        left = self.simctl.add("Project Duo 1", days=2)
+        self.assertEqual(self.pool.prune(udids={left}), [])
+        self.assertEqual(self.pool.prune(udids={left}, kind_after=timedelta(days=3)), [])
+        self.assertEqual(self.pool.prune(udids={left}, kind_after=timedelta(days=1)), ["Project Duo 1"])
+        recent = self.simctl.add("Project Duo 2", days=0.5 / 24)
+        self.assertEqual(self.pool.prune(udids={recent}, kind_after=timedelta(0)), [])
+        self.assertEqual(self.simctl.deleted(), [left])
+
     def test_a_member_used_after_it_was_found_eligible_is_not_pruned(self):
         self.simctl.add("Project Duo 1", days=40)
         stale = self.simctl.add("Project Duo 2", days=40)
@@ -2145,6 +2155,24 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(command(str(uuid.uuid4()).upper())[0], 1)
         self.assertEqual(self.simctl.deleted(), [])
         self.assertEqual(command(member), (0, f"Project Duo 1\n{template}\n"))
+        self.assertEqual(self.simctl.deleted(), [member, source])
+
+    def test_the_command_takes_a_shorter_kind_limit(self):
+        pool = self.make("me", warm=Warm())
+        member = self.simctl.add("Project Duo 1", days=40)
+        pool.release(pool.take(DUO, RUNTIME, purpose="Tests"), outcome="done")
+        template = "Project Duo template (iOS-27-1)"
+        source = devices.Record(self.path).entry(template)["device"]
+        for udid in (member, source): self.simctl.devices[udid]["lastUsedAt"] = (NOW - timedelta(days=2)).isoformat()
+        value = json.loads(self.path.read_text())
+        for entry in value["devices"].values(): entry["releasedAt"] = (NOW - timedelta(days=2)).isoformat()
+        self.path.write_text(json.dumps(value))
+        def command(*arguments):
+            out = StringIO()
+            with mock.patch.object(simulator_pool, "simctl", self.simctl), redirect_stdout(out), redirect_stderr(StringIO()):
+                return simulator_pool.main(["--pool", "Project", "--owner", "me", "prune", *arguments]), out.getvalue()
+        self.assertEqual(command(member), (1, "Nothing was pruned\n"))
+        self.assertEqual(command("--kind-idle-hours", "24.00", member), (0, f"Project Duo 1\n{template}\n"))
         self.assertEqual(self.simctl.deleted(), [member, source])
 
 

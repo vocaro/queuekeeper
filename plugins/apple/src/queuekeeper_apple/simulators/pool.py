@@ -406,16 +406,17 @@ def entries_for(member, record):
             (key == member.name or str(entry.get("device") or "").upper() == member.udid)}
 
 
-def prunable(member, pool_members, entries, now, idle_kinds=False):
+def prunable(member, pool_members, entries, now, idle_kinds=False, kind_after=KIND_PRUNE_AFTER):
     """(True, reason) when the pruning rule lets a session delete the member, else (False, reason). The
     lowest-numbered member of its kind goes only with idle_kinds, which a requested prune passes and a take's
-    never does, and only once every member of the kind is unused for KIND_PRUNE_AFTER."""
+    never does, and only once every member of the kind is unused for kind_after: KIND_PRUNE_AFTER, or the
+    shorter limit `qk disk` gives when the volume is short of space."""
     kind = [other for other in pool_members if other.kind == member.kind]
     after = PRUNE_AFTER
     if member.number == min(other.number for other in kind):
         keeps = "the lowest-numbered member of its kind, which keeps the kind and its approval"
         if not idle_kinds: return False, keeps
-        after = KIND_PRUNE_AFTER
+        after = max(kind_after, PRUNE_AFTER)
         used = [other for other in kind if other.udid != member.udid and
                 (other.state != "Shutdown" or other.last_used is None or now - other.last_used <= after)]
         if used:
@@ -439,10 +440,11 @@ def prunable(member, pool_members, entries, now, idle_kinds=False):
     return True, f"unused since {member.last_used:%Y-%m-%d %H:%M}, more than {span(after)}{last}{gone}"
 
 
-def template_prunable(template, pool_members, entries, now):
+def template_prunable(template, pool_members, entries, now, after=KIND_PRUNE_AFTER):
     """(True, reason) when a requested prune may delete the template, else (False, reason): its runtime is no
     longer installed, or its kind has no member left and neither it nor its record entry shows a use within
-    KIND_PRUNE_AFTER. The next new member of the kind warms another."""
+    after (KIND_PRUNE_AFTER, or the shorter limit `qk disk` gives). The next new member of the kind warms another."""
+    after = max(after, PRUNE_AFTER)
     if not template.available:
         return True, "its runtime is no longer installed"
     kept = "members are reset from it and new members cloned from it"
@@ -450,23 +452,23 @@ def template_prunable(template, pool_members, entries, now):
         return False, f"its kind has members: {kept}"
     if template.last_used is None:
         return False, "simctl records no last use"
-    if now - template.last_used <= KIND_PRUNE_AFTER:
-        return False, f"last used {template.last_used:%Y-%m-%d %H:%M}, within {span(KIND_PRUNE_AFTER)}"
+    if now - template.last_used <= after:
+        return False, f"last used {template.last_used:%Y-%m-%d %H:%M}, within {span(after)}"
     for key, entry in entries.items():
         if device_record.condition(entry) != "released":
             return False, f"its record entry {key} is {device_record.condition(entry)}"
         released = instant(entry.get("releasedAt"))
-        if released is None or now - released <= KIND_PRUNE_AFTER:
+        if released is None or now - released <= after:
             return False, f"its record entry {key} was released {entry.get('releasedAt') or 'at an unrecorded time'}"
     return True, (f"its kind has no member left and it is unused since {template.last_used:%Y-%m-%d %H:%M}, "
-                  f"more than {span(KIND_PRUNE_AFTER)}")
+                  f"more than {span(after)}")
 
 
 def span(delta):
     """A limit as words: in days when it is two whole days or more, else in hours."""
     hours = delta / timedelta(hours=1)
     if hours >= 48 and hours % 24 == 0: return f"{hours / 24:g} days"
-    return f"{hours:g} hour{'s' if hours != 1 else ''}"
+    return f"{round(hours, 1):g} hour{'s' if hours != 1 else ''}"
 
 
 @dataclass
@@ -1099,24 +1101,27 @@ class Pool:
                 kept.append((key, udid, "its shutdown or release was not confirmed; kept for recovery"))
         return released, kept
 
-    def eligible(self, device_type=None, runtime=None, listing=None):
+    def eligible(self, device_type=None, runtime=None, listing=None, kind_after=KIND_PRUNE_AFTER):
         """Each member with whether pruning may delete it, and why. Naming a kind is a take's check, which
         keeps the kind's lowest-numbered member however long the kind is unused."""
         found, record, now = self.members(listing), self.record.load(), self.clock()
-        return [(member, *prunable(member, found, entries_for(member, record), now, idle_kinds=device_type is None))
+        return [(member, *prunable(member, found, entries_for(member, record), now, idle_kinds=device_type is None,
+                                   kind_after=kind_after))
                 for member in found if device_type is None or member.kind == (device_type, runtime)]
 
-    def prune(self, device_type=None, runtime=None, udids=None):
+    def prune(self, device_type=None, runtime=None, udids=None, kind_after=KIND_PRUNE_AFTER):
         """Delete eligible members, the highest-numbered first, and return their names. With no kind named,
-        the templates the rule lets go follow, among them that of a kind whose last member this deleted."""
+        the templates the rule lets go follow, among them that of a kind whose last member this deleted.
+        kind_after replaces KIND_PRUNE_AFTER, as `qk disk` does when the volume is short of space."""
         pruned, emptied, idle_kinds = [], set(), device_type is None
-        candidates = [member for member, allowed, _ in self.eligible(device_type, runtime) if allowed
-                      and (udids is None or member.udid in udids)]
+        candidates = [member for member, allowed, _ in self.eligible(device_type, runtime, kind_after=kind_after)
+                      if allowed and (udids is None or member.udid in udids)]
         for member in sorted(candidates, key=lambda member: -member.number):
             # Reserve at the revision that was eligible, so a use since then refuses the reservation.
             entries = entries_for(member, self.record.load())
             found = self.members()
-            if member not in found or not prunable(member, found, entries, self.clock(), idle_kinds)[0]: continue
+            if member not in found or not prunable(member, found, entries, self.clock(), idle_kinds, kind_after)[0]:
+                continue
             try:
                 revision = self._reserve(member.name, "Prune an unused pool member", member.udid,
                                          revision=entries.get(member.name, {}).get("revision", 0))
@@ -1127,7 +1132,7 @@ class Pool:
             # Check again under the reservation that simctl shows it shut down and unchanged.
             others = {key: entry for key, entry in entries_for(member, self.record.load()).items() if key != member.name}
             found = self.members()
-            if member not in found or not prunable(member, found, others, self.clock(), idle_kinds)[0]:
+            if member not in found or not prunable(member, found, others, self.clock(), idle_kinds, kind_after)[0]:
                 self.release(lease, outcome="Not pruned: it changed before deletion", shutdown=False)
                 continue
             deleted = self.run("delete", member.udid, timeout=300)
@@ -1146,10 +1151,10 @@ class Pool:
             if not any(other.kind == member.kind for other in found if other.udid != member.udid):
                 emptied.add(member.kind)
         if device_type is None:
-            pruned += self.prune_templates(udids, emptied)
+            pruned += self.prune_templates(udids, emptied, kind_after)
         return pruned
 
-    def prune_templates(self, udids=None, kinds=()):
+    def prune_templates(self, udids=None, kinds=(), kind_after=KIND_PRUNE_AFTER):
         """Delete the shut-down, unheld templates the rule lets go (template_prunable), and return their names:
         those named, and those of the kinds given, when UDIDs are named. Otherwise only its replacement
         deletes a template."""
@@ -1157,7 +1162,7 @@ class Pool:
         found, record, now = self.members(), self.record.load(), self.clock()
         for template in templates(self.name, self.listing()):
             if udids is not None and template.udid not in udids and template.kind not in kinds: continue
-            allowed, why = template_prunable(template, found, entries_for(template, record), now)
+            allowed, why = template_prunable(template, found, entries_for(template, record), now, kind_after)
             if not allowed: continue
             if template.state != "Shutdown":
                 self.log(f"{template.name}: not pruned: it is {template.state}")
@@ -1445,6 +1450,10 @@ def main(argv, project=None):
                                 f"kind once the whole kind is unused for {span(KIND_PRUNE_AFTER)}, and templates "
                                 "whose runtime is no longer installed or whose kind has no member left")
     prune.add_argument("udids", nargs="*", metavar="UDID", help="only these members or templates")
+    prune.add_argument("--kind-idle-hours", type=float, metavar="HOURS",
+                       help=f"how long a whole kind must be unused before its last member and template go, instead "
+                            f"of {span(KIND_PRUNE_AFTER)}; `qk disk` shortens it when the volume is short of space "
+                            f"(never under {span(PRUNE_AFTER)})")
     reap = action("reap", help="shut down members and warmed templates left booted for 2 hours that "
                                "nothing accounts for, on this Mac and the farm's other Macs")
     reap.add_argument("--dry-run", action="store_true", help="say what it would stop and keep, and stop nothing")
@@ -1548,7 +1557,8 @@ def main(argv, project=None):
             listed = lambda: {entry["udid"].upper() for entries in pool.listing().get("devices", {}).values()
                               for entry in entries}
             unknown = (wanted or set()) - listed()
-            pruned = pool.prune(udids=wanted)
+            hours = getattr(args, "kind_idle_hours", None)
+            pruned = pool.prune(udids=wanted, kind_after=KIND_PRUNE_AFTER if hours is None else timedelta(hours=hours))
             print("\n".join(pruned) if pruned else "Nothing was pruned")
             # A kind's template follows its last member, so the names pruned may outnumber the UDIDs named.
             return 1 if wanted and (unknown or wanted & listed()) else 0

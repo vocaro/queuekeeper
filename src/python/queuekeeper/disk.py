@@ -87,6 +87,18 @@ class Process:
 START_FREE = ("QUEUEKEEPER_START_FREE_GB", 10.0)
 RUN_FREE = ("QUEUEKEEPER_RUN_FREE_GB", 2.0)
 GIB = 1024 ** 3
+# The free space, in GiB, below which `qk disk` loosens the idle limits of its rules (LOW_FREE), and the free space
+# the loosened rules then aim for (GOAL_FREE): each its environment variable and its default. The standard limits
+# keep a week of a pool's kinds and two weeks of an unused runtime, sized for a disk with room; on 2026-11-26 the
+# first Mac had 46 GiB free and 157 GiB of simulators, nearly all kept by those limits, so `qk disk` offered 5 GiB
+# (owner's decision, 2026-11-26: when space is at a premium, say under 50 GiB, delete more). Under LOW_FREE the
+# limits shorten only as far as freeing GOAL_FREE needs, the least recently used items first (loosen); aiming above
+# the trigger keeps one loosened run from leaving the volume just under it again. No rule that keeps an item for
+# a use, a process, a reservation or an owner's decision loosens, and no limit falls below its floor (IDLE_FLOOR,
+# or the floor a rule names).
+LOW_FREE = ("QUEUEKEEPER_DISK_LOW_GB", 50.0)
+GOAL_FREE = ("QUEUEKEEPER_DISK_GOAL_GB", 100.0)
+IDLE_FLOOR = 3600.0
 
 
 def volume_usage(path=DATA_VOLUME):
@@ -338,6 +350,15 @@ class Host:
     offload_host: str = None  # the first of the farm's Macs, when this Mac sends work to one
     offload_hosts: tuple = ()  # the farm's Macs that take work now, by their SSH destinations, in order
     run: object = subprocess.run
+    # The idle limit, in seconds, the loosened rules use when the volume is short of space (loosen), or None for
+    # the standard limits.
+    cutoff: float = None
+
+    def window(self, standard, floor=IDLE_FLOOR):
+        """The idle limit, in seconds, of a rule whose standard limit is standard: that, or under pressure the
+        loosened cutoff, never above standard and never below floor (or standard, when that is lower)."""
+        if self.cutoff is None: return standard
+        return max(min(floor, standard), min(standard, self.cutoff))
 
     @classmethod
     def current(cls, min_idle, development=None, run=subprocess.run):
@@ -435,7 +456,7 @@ def cache_item(host, usage, sizes, category, path, reason):
     idle = host.now - last_activity(path)
     use = usage.of(path)
     if use: return Item(category, str(path), KEPT, "in use: " + described(use), sizes.of(path), None, idle)
-    if idle < host.min_idle:
+    if idle < host.window(host.min_idle):
         return Item(category, str(path), KEPT, f"{reason}, but changed {age(idle)} ago", sizes.of(path), None, idle)
     return Item(category, str(path), CANDIDATE, f"{reason}; no process; idle {age(idle)}", sizes.of(path),
                 ["rm", "-rf", "--", str(path)], idle)
@@ -562,12 +583,89 @@ def inventory(host, sizes, categories=None):
     return items
 
 
+# Loosening under pressure
+
+@dataclass
+class Pressure:
+    """How short of space the volume is and how far loosen shortened the idle limits: free, low and goal in bytes;
+    standard, what the standard rules' candidates take; needed, what more reaching goal needs; cutoff, the idle
+    limit chosen (None when nothing was loosened); reached, what the candidates take at that limit."""
+    free: int
+    low: int
+    goal: int
+    standard: int = 0
+    needed: int = 0
+    cutoff: float = None
+    reached: int = 0
+
+    def words(self):
+        """The pressure in words, for the report and each item it made a candidate."""
+        short = f"{human(self.free)} free is under {human(self.low)}"
+        if self.cutoff is None:
+            return f"{short}, but the standard rules' candidates reach {human(self.goal)} free" if not self.needed \
+                else f"{short}, but no rule's idle limit can shorten further"
+        return (f"{short}, so idle limits shorten to {age(self.cutoff)}, the least recently used first, "
+                f"to free {human(self.needed)} more toward {human(self.goal)}")
+
+
+def candidate_size(items):
+    return sum(item.size for item in items if item.status == CANDIDATE)
+
+
+def loosen(host, sizes, items, free, low, goal, categories=None):
+    """When free is under low, the inventory again with each idle limit shortened (Host.window) as little as
+    freeing goal needs, and the Pressure; else items as they are. Each limit tried is the idle time of an item
+    only a loosened rule makes a candidate, so each step adds the next least recently used; looser limits only
+    add candidates, so a bisection finds the longest that is enough, or the loosest when none is."""
+    pressure = Pressure(free, low, goal, candidate_size(items))
+    pressure.needed = max(0, goal - free - pressure.standard)
+    if free >= low or not pressure.needed: return items, pressure
+    progress, sizes.progress = sizes.progress, quiet
+    try:
+        def at(cutoff):
+            host.cutoff = cutoff
+            return inventory(host, sizes, categories)
+        known = {(item.category, item.path) for item in items if item.status == CANDIDATE}
+        limits = sorted({item.idle for item in at(0.0) if item.status == CANDIDATE and item.idle
+                         and (item.category, item.path) not in known}, reverse=True)
+        if not limits:
+            host.cutoff = None
+            return items, pressure
+        chosen, lowest, highest = len(limits) - 1, 0, len(limits) - 1
+        while lowest <= highest:
+            middle = (lowest + highest) // 2
+            if candidate_size(at(limits[middle] - 1)) - pressure.standard >= pressure.needed:
+                chosen, highest = middle, middle - 1
+            else:
+                lowest = middle + 1
+        loosened = at(limits[chosen] - 1)
+    finally:
+        sizes.progress = progress
+    pressure.cutoff, pressure.reached = host.cutoff, candidate_size(loosened)
+    for item in loosened:
+        if item.status == CANDIDATE and (item.category, item.path) not in known:
+            item.reason = f"{item.reason}; loosened: {pressure.words()}"
+    return loosened, pressure
+
+
+def pressure_limits(args):
+    """(low, goal) in bytes: the flags', else the variables', else the defaults; goal is never under low."""
+    def setting(given, variable):
+        if given is not None: return given
+        try: return float(os.environ.get(variable[0], variable[1]))
+        except ValueError: return variable[1]
+    low = max(0.0, setting(args.low_free_gb, LOW_FREE))
+    return int(low * GIB), int(max(low, setting(args.goal_free_gb, GOAL_FREE)) * GIB)
+
+
 # Reporting
 
-def report(items, volume, unreadable, min_size, out=print):
+def report(items, volume, unreadable, min_size, out=print, pressure=None):
     if volume:
         total, used, free = volume
         out(f"Data volume {DATA_VOLUME}: {human(used)} used of {human(total)}, {human(free)} free.")
+    if pressure and pressure.free < pressure.low:
+        out(f"Short of space: {pressure.words()}.")
     out("This inventory changed nothing. Sizes are allocated sizes from du; APFS clones share blocks, "
         "so removing one can free less.\n")
     for category, title in CATEGORIES.items():
@@ -690,7 +788,10 @@ def delete(items, fresh, ledger, out=print, run=subprocess.run, approval=None, p
             progress(f"Removing {place} of {len(group)} {category} candidates: {item.path}", force=True)
             now = current.get(item.path)
             entry = removal_entry(item, answered)
-            if now is None or now.status != CANDIDATE or now.command != item.command or now.worktree != item.worktree:
+            if item.location and not os.path.lexists(item.location):
+                # Removed with an earlier item, as a pool's template goes with its kind's last member.
+                entry["outcome"] = "skipped: already removed with an earlier item"
+            elif now is None or now.status != CANDIDATE or now.command != item.command or now.worktree != item.worktree:
                 entry["outcome"] = "skipped: " + (now.reason if now else "no longer present")
             elif refused := removal_refused(item, run):
                 entry["outcome"] = "skipped: " + refused
@@ -717,6 +818,11 @@ def add_arguments(parser):
     parser.add_argument("--min-idle-hours", type=float,
                         help="count an item idle only after this many unchanged hours (default 24)")
     parser.add_argument("--min-size-mb", type=float, default=100.0, help="list smaller items only as totals")
+    parser.add_argument("--low-free-gb", type=float, help="below this much free space, shorten the rules' idle "
+                        f"limits to delete more, least recently used first (default ${LOW_FREE[0]} or "
+                        f"{LOW_FREE[1]:g}; 0 keeps the standard limits)")
+    parser.add_argument("--goal-free-gb", type=float, help="the free space the shortened limits aim for "
+                        f"(default ${GOAL_FREE[0]} or {GOAL_FREE[1]:g})")
     parser.add_argument("--development", type=Path, help="directory holding the projects (default ~/Development)")
 
 
@@ -735,25 +841,36 @@ def execute(args, run=subprocess.run, out=print):
     if callable(getattr(sys.stdout, "reconfigure", None)): sys.stdout.reconfigure(line_buffering=True)
     if args.prune_pins: return prune_pins(out)
     progress = Progress()
-    def collect(categories=None, measure=True):
+    def collect(categories=None, measure=True, cutoff=None):
         idle_hours = 24.0 if args.min_idle_hours is None else args.min_idle_hours
         if measure: progress("Listing the account's processes with lsof and ps.", force=True)
         host = host_class().current(idle_hours * 3600, args.development, run)
+        host.cutoff = cutoff
         sizes = Sizes(run, measure, progress if measure else quiet)
         if measure: prime_items(host, sizes)
         return host, sizes, inventory(host, sizes, categories)
     host, sizes, items = collect()
     volume = volume_usage(DATA_VOLUME)
+    pressure = None
+    if volume:
+        pressure = Pressure(volume[2], *pressure_limits(args))
+        if pressure.free < pressure.low: progress(f"Short of space: {human(pressure.free)} free is under "
+                                                  f"{human(pressure.low)}; finding how far to shorten idle limits.",
+                                                  force=True)
+        items, pressure = loosen(host, sizes, items, pressure.free, pressure.low, pressure.goal)
     if args.dry_run: items = [item for item in items if item.status == CANDIDATE]
     if args.json:
-        out(json.dumps({"volume": volume, "items": [asdict(item) for item in items]}, indent=2))
+        out(json.dumps({"volume": volume, "pressure": pressure and asdict(pressure),
+                        "items": [asdict(item) for item in items]}, indent=2))
     elif args.dry_run:
+        if pressure and pressure.free < pressure.low: out(f"Short of space: {pressure.words()}.")
         plan(items, out)
     else:
-        report(items, volume, sizes.unreadable, args.min_size_mb * 1024 * 1024, out)
+        report(items, volume, sizes.unreadable, args.min_size_mb * 1024 * 1024, out, pressure)
     if args.delete:
         ledger = ledger_path(host.home)
-        delete(items, lambda category: collect([category], measure=False)[2], ledger, out=out, run=run,
+        cutoff = host.cutoff
+        delete(items, lambda category: collect([category], measure=False, cutoff=cutoff)[2], ledger, out=out, run=run,
                approval=args.yes, progress=progress)
     return 0
 
