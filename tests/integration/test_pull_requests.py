@@ -141,7 +141,8 @@ class PullRequestCheck(unittest.TestCase):
         self.assertEqual(status, 1, said)
         self.assertEqual(self.ran, [])
         self.assertEqual([(state, context) for state, context, _ in self.posted()], [("failure", "queuekeeper/gate")])
-        self.assertIn("conflicts with main", self.posted()[0][2])
+        self.assertIn("conflicts with main in feature: rebase its branch onto main and push it", self.posted()[0][2])
+        self.assertNotIn("commit the result", self.posted()[0][2])
         # The kept checkout is left with no merge in progress, ready for the next check.
         checkout = Path(self.git(self.project, "rev-parse", "--path-format=absolute", "--git-common-dir")) \
             / pull_requests.FOLDER / "7"
@@ -190,6 +191,9 @@ class PullRequestCheck(unittest.TestCase):
         self.assertEqual(found, {"number": 7, "head": self.head, "title": "Add the feature", "headRefName": "feature",
                                  "url": "https://github.com/o/r/pull/7", "label": "queue"})
         self.assertEqual(pull_requests.merge_message(found), "Merge pull request #7 from feature\n\nAdd the feature")
+        # As GitHub's own merge subject names it, OWNER/BRANCH, when gh names the head's owner.
+        self.pull_request(labels=[{"name": "queue"}], headRefName="feature", headRepositoryOwner={"login": "o"})
+        self.assertEqual(pull_requests.for_queue(self.project, 7, "queue")["headRefName"], "o/feature")
         for fields, said in (({"labels": []}, "has no queue label"),
                              ({"labels": [{"name": "queue"}], "isDraft": True}, "is a draft"),
                              ({"labels": [{"name": "queue"}], "baseRefName": "develop"}, "targets develop"),

@@ -82,7 +82,8 @@ def for_queue(root, number, label):
     {number, head, title, headRefName, url, label}. Raises ValueError unless it is open, not a draft, based on main
     and labeled label, the person's approval (vocaro/queuekeeper#376)."""
     status, out, err = run(["gh", "pr", "view", str(number), "--json",
-                            "number,state,isDraft,baseRefName,headRefOid,headRefName,title,labels,url"], root)
+                            "number,state,isDraft,baseRefName,headRefOid,headRefName,headRepositoryOwner,title,labels,"
+                            "url"], root)
     if status: raise ValueError(f"gh could not find pull request {number}: {err or out or f'exit {status}'}")
     try: found = json.loads(out)
     except ValueError as error: raise ValueError(f"gh answered with something other than JSON: {error}") from error
@@ -102,20 +103,28 @@ def for_queue(root, number, label):
         raise ValueError(f"origin has no commit {head[:12]}, pull request {number}'s head: it was pushed over since gh "
                          "was asked, so land it again")
     return {"number": found["number"], "head": head, "title": found.get("title") or "",
-            "headRefName": found.get("headRefName") or "", "url": found.get("url") or "", "label": label}
+            "headRefName": branch_of(found), "url": found.get("url") or "", "label": label}
+
+
+def branch_of(found):
+    """A pull request's head branch as GitHub's own merge subject names it, OWNER/BRANCH, from gh's answer."""
+    owner = (found.get("headRepositoryOwner") or {}).get("login") if isinstance(found.get("headRepositoryOwner"),
+                                                                                   dict) else None
+    branch = found.get("headRefName") or ""
+    return f"{owner}/{branch}" if owner and branch else branch
 
 
 def labeled(root, label):
     """The open pull requests on main that carry label, as for_queue returns them less their fetch: a list, or
     raise ValueError when gh cannot list them. A draft is left out, as for_queue refuses it."""
     status, out, err = run(["gh", "pr", "list", "--state", "open", "--base", "main", "--label", label, "--limit", "100",
-                            "--json", "number,headRefOid,headRefName,title,url,isDraft"], root)
+                            "--json", "number,headRefOid,headRefName,headRepositoryOwner,title,url,isDraft"], root)
     if status: raise ValueError(f"gh could not list the pull requests labeled {label}: {err or out or f'exit {status}'}")
     try: found = json.loads(out)
     except ValueError as error: raise ValueError(f"gh answered with something other than JSON: {error}") from error
     if not isinstance(found, list): raise ValueError("gh's list of pull requests is not a list")
     return [{"number": item["number"], "head": item["headRefOid"], "title": item.get("title") or "",
-             "headRefName": item.get("headRefName") or "", "url": item.get("url") or "", "label": label}
+             "headRefName": branch_of(item), "url": item.get("url") or "", "label": label}
             for item in found if isinstance(item, dict) and item.get("number") and item.get("headRefOid")
             and not item.get("isDraft")]
 
@@ -193,8 +202,10 @@ def merged(root, checkout, request):
     status, out, err = git(checkout, "merge", "-q", "--no-ff", "--no-edit", "-m",
                            f"Merge pull request #{number} for qk pr check", head, env=IDENTITY)
     if status:
+        files = git(checkout, "diff", "--name-only", "--diff-filter=U")[1].split()
         git(checkout, "merge", "--abort")
-        return None, f"pull request {number} conflicts with {base}: {(err or out).splitlines()[-1] if err or out else ''}"
+        where = f" in {', '.join(files[:5])}{' and more' if len(files) > 5 else ''}" if files else ""
+        return None, f"pull request {number} conflicts with {base}{where}: rebase its branch onto {base} and push it"
     return git(checkout, "rev-parse", "HEAD")[1], None
 
 
@@ -283,7 +294,7 @@ def main(root, argv):
         return USAGE
     if args.action == "queue":
         from .merge_queue import queue_labeled
-        try: return queue_labeled(Path(top), say=say, quiet=False)
+        try: return queue_labeled(Path(top), say=lambda line: print(f"qk pr queue: {line}", flush=True), quiet=False)
         except ValueError as error:
             print(f"qk pr queue: {error}", file=sys.stderr)
             return FAILED

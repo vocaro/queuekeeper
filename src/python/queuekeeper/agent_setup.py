@@ -286,7 +286,10 @@ def setup(root, args):
         status = 2
         lines.append(f"{path}: left as it is: {error}")
     for line in lines: print(line)
-    if status == 0 and mode in (PULL_REQUEST, PULL_REQUEST_QUEUE):
+    if status == 0 and mode == PULL_REQUEST_QUEUE:
+        print("commit these files on a branch, open a pull request and have a person label it for the merge queue, "
+              "so that every worktree has them once it lands")
+    elif status == 0 and mode == PULL_REQUEST:
         print("commit these files on a branch and merge them through a pull request, so that every worktree has them")
     elif status == 0:
         print("commit these files on a branch and land them with `qk land --wait`, so that every worktree has them")

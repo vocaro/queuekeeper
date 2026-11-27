@@ -9,7 +9,8 @@ nothing and exits 0.
   suggested commands. An agent otherwise learns of a send-back only while it follows `qk land --wait`.
 - pre-tool-use refuses a Bash command that would land on main by hand, `git push` to main, `git merge` or `git pull`
   on main other than a fast-forward to the remote's main, moving main with `git update-ref` or `git branch -f`, and
-  `gh pr merge`. It points the agent to `qk land`, or, in a project whose queuekeeper.json says
+  `gh pr merge`; in a pull-request-queue project, adding the queue's label too (labeling, vocaro/queuekeeper#391).
+  It points the agent to `qk land`, or, in a project whose queuekeeper.json says
   `"integration": "pull-request"`, to a pull request that a person merges (vocaro/queuekeeper#374). It is a guard rail
   against a mistake, not a security boundary: it reads the command's words, follows `cd`, `git -C` and `sh -c`, and
   lets through anything it cannot parse."""
@@ -50,6 +51,14 @@ def integration(root):
     try: value = json.loads((Path(root) / "queuekeeper.json").read_text()).get("integration", DIRECT_MAIN)
     except (OSError, ValueError, AttributeError): return DIRECT_MAIN
     return value if value in (PULL_REQUEST, PULL_REQUEST_QUEUE) else DIRECT_MAIN
+
+
+def queue_label(root):
+    """The label that approves a pull request for the queue of the project at root, read raw as integration reads its
+    integration: pullRequests.label, else queue."""
+    try: label = json.loads((Path(root) / "queuekeeper.json").read_text()).get("pullRequests", {}).get("label")
+    except (OSError, ValueError, AttributeError): label = None
+    return label if isinstance(label, str) and label.strip() else "queue"
 
 
 def event():
@@ -357,6 +366,60 @@ def refusal(command, directory, depth=0):
     return None
 
 
+# gh's commands that put labels on a pull request or issue as they make or edit it, and the options that name them.
+LABELING = {("pr", "edit"): ("--add-label",), ("issue", "edit"): ("--add-label",),
+            ("pr", "create"): ("--label", "-l"), ("issue", "create"): ("--label", "-l")}
+# A gh api path to an issue's or pull request's labels, and the options that make gh api write rather than read.
+LABELS_PATH = re.compile(r"(?:^|/)(?:issues|pulls)/\d+/labels(?:$|[/?])")
+WRITES = {"-f", "--raw-field", "-F", "--field", "--input"}
+
+
+def option_values(arguments, names):
+    """Each value arguments give the options names, as `--name VALUE` or `--name=VALUE`."""
+    values = []
+    for index, word in enumerate(arguments):
+        for name in names:
+            if word == name and index + 1 < len(arguments): values.append(arguments[index + 1])
+            elif word.startswith(name + "=") and name.startswith("--"): values.append(word[len(name) + 1:])
+    return values
+
+
+def labeling(command, label, depth=0):
+    """Why command puts label on a pull request, which only a person may do in a pull-request-queue project
+    (vocaro/queuekeeper#391), or None: gh pr|issue edit --add-label, gh pr|issue create --label, or a gh api write to an
+    issue's or pull request's labels, REST or GraphQL, that names label or reads its fields from a file. Taking the
+    label off, which stops a pull request, passes."""
+    found = segments(command)
+    if found is None or depth > 3: return None
+    for words in found:
+        words = plain(words)
+        if not words: continue
+        name = Path(words[0]).name
+        if name in SHELLS and "-c" in words[1:-1]:
+            inner = labeling(words[words.index("-c", 1) + 1], label, depth + 1)
+            if inner: return inner
+            continue
+        if name != "gh" or len(words) < 2: continue
+        options = LABELING.get(tuple(words[1:3]))
+        if options and any(label in (part.strip() for part in value.split(","))
+                           for value in option_values(words[3:], options)):
+            return f"gh {' '.join(words[1:3])} would add the {label} label, a person's approval for the merge queue"
+        if words[1] != "api": continue
+        arguments = words[2:]
+        method = (option_values(arguments, ("-X", "--method")) or ["GET"])[-1].upper()
+        writes = method in ("POST", "PUT", "PATCH") or (method == "GET" and any(
+            word in WRITES or any(word.startswith(option + "=") for option in WRITES if option.startswith("--"))
+            for word in arguments) and not option_values(arguments, ("-X", "--method")))
+        if not writes: continue
+        named = any(label in word for word in arguments) or "--input" in arguments \
+            or any(word.startswith("--input=") for word in arguments)
+        if any(LABELS_PATH.search(word) for word in arguments) and named:
+            return f"gh api would add the {label} label to a pull request, a person's approval for the merge queue"
+        if "graphql" in arguments and any("addLabelsToLabelable" in word for word in arguments):
+            return f"gh api graphql would add labels to a pull request, and the {label} label is a person's approval"
+    return None
+
+
 def pre_tool_use(payload):
     if os.environ.get(GUARD_SWITCH, "").strip().lower() == "off": return None
     if payload.get("tool_name") != "Bash": return None
@@ -364,9 +427,19 @@ def pre_tool_use(payload):
     if not isinstance(command, str): return None
     directory = Path(payload.get("cwd") or os.getcwd())
     why = refusal(command, directory)
+    switch = f"A person can turn this guard off with {GUARD_SWITCH}=off in Claude Code's environment."
+    # Only a gh command that may name labels reads the project's mode for them, so that the guard stays quick: one
+    # with "label" in it, or -l, gh pr create's short --label.
+    if not why and "gh" in command and ("label" in command.lower() or re.search(r"(?:^|\s)-l", command)):
+        top = git(directory, "rev-parse", "--show-toplevel")
+        if top and integration(top) == PULL_REQUEST_QUEUE:
+            label = queue_label(top)
+            if labeled := labeling(command, label):
+                return (f"Queuekeeper refused this: {labeled}. In this project the {label} label approves a pull "
+                        "request for the merge queue, which then merges it, so only a person adds it: open the pull "
+                        f"request and leave the label to a person. {switch}")
     if not why: return None
     top = git(directory, "rev-parse", "--show-toplevel")
-    switch = f"A person can turn this guard off with {GUARD_SWITCH}=off in Claude Code's environment."
     mode = integration(top) if top else DIRECT_MAIN
     if mode == PULL_REQUEST:
         return (f"Queuekeeper refused this: {why}, and in this project changes reach main only through a pull request "

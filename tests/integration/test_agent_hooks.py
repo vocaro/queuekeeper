@@ -240,6 +240,34 @@ class Guard(Repository):
         self.assertIn("labels for the merge queue", why)
         self.assertNotIn("qk land --wait", why)
 
+    def test_an_agent_may_not_add_the_queue_label_in_a_pull_request_queue_project(self):
+        """The label is a person's approval, and the queue merges what carries it (vocaro/queuekeeper#391)."""
+        def decided(command, config):
+            (self.linked / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "x", **config}))
+            found = self.hook("pre-tool-use", {"tool_name": "Bash", "tool_input": {"command": command},
+                                               "cwd": str(self.linked)})
+            return found and found["hookSpecificOutput"]["permissionDecisionReason"]
+        queue_mode = {"integration": "pull-request-queue"}
+        for command in ("gh pr edit 5 --add-label queue", "gh pr edit 5 --add-label=bug,queue",
+                        "gh issue edit 5 --add-label queue", "gh pr create --title x --label queue",
+                        "gh pr create -l queue", "bash -c 'gh pr edit 5 --add-label queue'",
+                        "gh api repos/o/r/issues/5/labels -f 'labels[]=queue'",
+                        "gh api --method POST repos/o/r/issues/5/labels --input labels.json",
+                        "gh api graphql -f query='mutation { addLabelsToLabelable(input: {}) { clientMutationId } }'"):
+            with self.subTest(command=command):
+                why = decided(command, queue_mode)
+                self.assertIn("leave the label to a person", why)
+        for command in ("gh pr edit 5 --remove-label queue", "gh api -X DELETE repos/o/r/issues/5/labels/queue",
+                        "gh api repos/o/r/issues/5/labels", "gh pr edit 5 --add-label queued",
+                        "gh pr edit 5 --add-label bug", "qk land --pr 5", "gh pr view 5 --json labels"):
+            with self.subTest(command=command):
+                self.assertIsNone(decided(command, queue_mode))
+        # Another label, as pullRequests.label names it; and in other modes a label is no approval.
+        self.assertIsNotNone(decided("gh pr edit 5 --add-label ship", {**queue_mode, "pullRequests": {"label": "ship"}}))
+        self.assertIsNone(decided("gh pr edit 5 --add-label queue", {**queue_mode, "pullRequests": {"label": "ship"}}))
+        self.assertIsNone(decided("gh pr edit 5 --add-label queue", {"integration": "pull-request"}))
+        self.assertIsNone(decided("gh pr edit 5 --add-label queue", {}))
+
     def test_other_tools_and_the_owners_switch_pass(self):
         found = self.hook("pre-tool-use", {"tool_name": "Write", "tool_input": {"command": "git push origin main"}})
         self.assertIsNone(found)
