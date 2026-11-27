@@ -159,6 +159,7 @@ def entry_result(queue, entry):
             "docsOnly": entry.get("docsOnly"), "docsNamed": entry.get("docsNamed"), "ungated": entry.get("ungated"),
             "partialGate": entry.get("partialGate"),
             "reusedGates": entry.get("reusedGates"),
+            "replaced": entry.get("replaced") or [], "replacedRefs": entry.get("replacedRefs"),
             "publication": publication(queue, entry) if pending else None,
             "removedWhy": entry.get("removedWhy"), "confirmed": entry.get("confirmed"),
             "recovery": recovery.in_project(
@@ -217,6 +218,7 @@ def result(root, identifier, as_json=False):
         print(json.dumps(found, indent=2))
     else:
         print(f"{found['state']:8} {found['id']}  {found['subject'] or ''}")
+        for line in merge_queue.replaced_lines(found): print(line)
         if found["landedAs"]: print(f"landed: {found['landedAs']}")
         for lane, source in (found["reusedGates"] or {}).items():
             print(f"{lane}: reused the passing local run at {source['commit'][:12]}")

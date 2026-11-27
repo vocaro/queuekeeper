@@ -394,6 +394,35 @@ still need a manual resolution. This setting does not change which gate lanes ru
   does it for its own branch once the entry lands, and `qk queue reclaim` does it for every branch
   the queue holds a landed entry from ([Cleaning up after a landing](#cleaning-up-after-a-landing)).
 
+### Commits that land under new hashes
+
+The queue cherry-picks a branch's commits onto `origin/main`, so most land under new hashes.
+Evidence that names a commit by hash can still point at the old one, such as a recording that
+names the commit it was captured from. That hash would stop resolving once the branch is deleted.
+So, when an entry lands, the worker keeps each of the branch's commits that landed under a new
+hash with a ref, `refs/queuekeeper/landed/OLD`, and pushes those refs to `origin` right after
+`main`. A commit that landed under its own hash gets no ref.
+
+The entry's record maps each old commit to its new one. `qk queue result --json` gives the
+mapping as `replaced`, a list of `{commit, landedAs, ref}`, and `replacedRefs` says whether
+`origin` took the refs: `pushed`, and `error` with Git's answer when it did not. In text,
+`qk land --wait`, `qk queue wait`, `qk queue status` and `qk queue result` print one `replaced: OLD -> NEW, kept as REF`
+line for each. A failed ref push doesn't undo or fail the landing. It is reported, and the refs
+stay in the local repository, so you can push them later with
+`git push origin 'refs/queuekeeper/landed/*:refs/queuekeeper/landed/*'`.
+
+There is one ref for each replaced commit, and Queuekeeper never deletes them: its branch deletion
+and `qk queue reclaim` touch only branches. Clones don't fetch them unless asked. To
+remove the refs no evidence cites any more:
+
+```sh
+git push origin --delete refs/queuekeeper/landed/OLD     # one, on origin
+git update-ref -d refs/queuekeeper/landed/OLD            # and here
+git for-each-ref --format='%(refname)' refs/queuekeeper/landed/   # list what is kept
+```
+
+The queue doesn't merge these commits into `main`'s history.
+
 ### Repeated conflicts with entries ahead
 
 For a wide change such as a folder move, use the refusal's file paths and entry IDs to find the

@@ -644,6 +644,18 @@ and whose lanes are none the batch's own paths selected (`carried_by_rules`) car
 `qk preflight` passes on the rebased tree; a batch that ran a `provision` lane, a docs-only batch
 and an ungated landing carry over this way never.
 
+**Replaced commits keep a ref** (vocaro/queuekeeper#368). `settle_pushed` calls `keep_replaced`
+after every landing, including one that `reconcile` settles. `matched` pairs each of the batch's
+branch commits with its commit in `base..head`, by author, author date and subject, the same way
+`landed` does. For an entry queued as a replay (`replays`), the branch commits are those that
+`branch_commits` reads from the branch tip, less the push's base. For each pair whose hashes differ,
+it makes `LANDED_REF` (`refs/queuekeeper/landed/OLD`), and `push_kept` pushes the refs to `origin` with
+`--no-verify` in a push of their own after `main`'s. That keeps a failure away from `main`'s
+publication handling. The entry records `replaced` and `replacedRefs`. A failure is said and
+recorded but never raised. Nothing in Queuekeeper lists or prunes `LANDED_REF`. `landed_cleanup`
+deletes only `refs/heads/`, and `worktree_ownership.unlanded` treats the kept refs as refs, as it
+treats any other.
+
 ### State and recovery
 
 State lives under `queuekeeper-queue` in the repository's common Git directory:
