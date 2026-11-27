@@ -195,7 +195,8 @@ qk pr check 42
 
 - **What it tests.** It fetches the pull request's head and base and merges them in a checkout
   of its own under the repository's Git directory, `.git/queuekeeper-pr-checks/42`, kept between
-  checks so builds stay warm. The merge is what would land, so that is what the lanes run on.
+  checks so builds stay warm. Once GitHub says a pull request is merged or closed, the next check
+  removes its checkout, with its build output and logs. The merge is what would land, so that is what the lanes run on.
   Without a number it checks the current branch's pull request.
 - **What it runs.** Each lane runs as `qk run LANE` in that checkout, so it waits for admission
   and goes to whichever Mac has room. The default is `gate`; name others with `--lane LANE`,
@@ -253,6 +254,11 @@ ahead of it, batches and bisects as it does for `qk land`, and merges what passe
 - **`qk land` without `--pr`** queues no branch in such a project, and says to open a pull
   request instead.
 
+- **The pull request shows where it stands.** The queue posts its head's `queuekeeper/gate`
+  status as `qk pr check` does: `pending` while it waits and is gated, `success` once it lands,
+  `failure` when it comes back, with why, and `error` when it is taken out or refused before it
+  is queued. `gh pr list --label` can lag a label added seconds ago, so a `qk pr queue` run at once
+  may not see it yet; the next look does.
 - **Approval is asked again before the push.** Once a batch passes, the queue asks GitHub
   about each pull request in it. One that was closed, pushed again, or had its label taken off
   while it waited is taken out, with the reason in `removedWhy`, and the rest are gated again
@@ -4063,7 +4069,9 @@ by hand and points the agent to `qk land --wait`, or, in a project with
   `gh pr create` or `gh issue create` with `--label`, and a `gh api` write to an issue's or
   pull request's labels or GraphQL's `addLabelsToLabelable`. Taking the label off passes.
 
-It reads each command of a line, follows `cd`, `git -C` and `sh -c`, and skips redirections,
+It reads each command of a line, follows `cd`, `git -C` and `sh -c`, and judges a push or merge
+after a `git switch` or `git checkout` in the same line by the branch switched to. Where it
+cannot read that branch, it judges by the one checked out now, and says so. It skips redirections,
 variable assignments and `sudo`. It is a guard rail against a mistake, not a security boundary,
 and lets through what it cannot parse. Set `QUEUEKEEPER_GUARD=off` in Claude Code's environment
 to turn it off for a session.

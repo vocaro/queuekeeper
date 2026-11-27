@@ -2027,8 +2027,29 @@ class Queue:
             yield
 
     def emit(self, kind, **fields):
-        """Write an event to the queue's journal (events), which explains the queue and never stops it."""
-        return events.emit(self.directory, kind, **fields)
+        """Write an event to the queue's journal (events), which explains the queue and never stops it. An event of a
+        pull request's entry is posted on the pull request too (pull_request_status)."""
+        event = events.emit(self.directory, kind, **fields)
+        if kind in PULL_REQUEST_STATUSES or kind == "entries.testing": self.pull_request_status(kind, fields)
+        return event
+
+    def pull_request_status(self, kind, fields):
+        """Post where a pull request's entry stands as its head's queuekeeper/gate status, as qk pr check does, so that
+        the pull request shows it (vocaro/queuekeeper#394): pending while queued and gated, then success on landing,
+        failure when it came back, and error when it was taken out. Never stops the queue."""
+        from .pull_requests import post
+        for identifier in fields.get("entries") or [fields.get("entry")]:
+            entry = self.read(identifier) if identifier else None
+            if not entry or not entry.get("pullRequest"): continue
+            state, description = PULL_REQUEST_STATUSES.get(kind, ("pending", "the merge queue is testing it"))
+            if kind == "entry.landed":
+                description = f"landed on main as {str(entry.get('landedAs') or '')[:12]}"
+            elif kind in ("entry.failed", "entry.conflict"):
+                why = (entry.get("failure") or {}).get("message") or entry.get("why") or ""
+                description = f"{description}: {why.split('. ')[0]}" if why else description
+            elif kind == "entry.removed" and entry.get("removedWhy"):
+                description = f"{description}: {entry['removedWhy']}"
+            with contextlib.suppress(Exception): post(self.root, entry["tip"], "gate", state, description)
 
     def save(self, entry):
         path = self.entries / f"{entry['id']}.json"
@@ -9899,6 +9920,13 @@ def refusal(tip, found, base, root):
 # Under the queue's directory: {pull request number: the head qk land --pr last refused}, so that a scan does not try a
 # refused pull request again until it is pushed (queue_labeled).
 REFUSED_PULL_REQUESTS = "pull-requests-refused.json"
+# The queuekeeper/gate status each journaled change of a pull request's entry posts (Queue.pull_request_status);
+# entries.testing posts pending as well.
+PULL_REQUEST_STATUSES = {"entry.queued": ("pending", "queued for the merge queue"),
+                         "entry.landed": ("success", "landed on main"),
+                         "entry.failed": ("failure", "the merge queue sent it back"),
+                         "entry.conflict": ("failure", "the merge queue sent it back as a conflict"),
+                         "entry.removed": ("error", "taken out of the merge queue")}
 
 
 def scan_labeled(root):
@@ -9956,6 +9984,8 @@ def queue_labeled(root, say=print, quiet=True):
         except (ValueError, subprocess.SubprocessError, OSError) as error:
             refused[str(number)] = {"head": head, "why": str(error).split(":")[0][:120]}
             skipped.append(f"#{number}")
+            with contextlib.suppress(Exception):
+                pull_requests.post(root, head, "gate", "error", f"not queued: {error}")
             say(f"pull request {number}, labeled {label}, was not queued at {head[:12]}: {error}")
             continue
         if identifier:

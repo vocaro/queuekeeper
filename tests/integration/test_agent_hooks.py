@@ -160,6 +160,27 @@ class Guard(Repository):
             with self.subTest(command=command):
                 self.assertIsNone(self.decision(command))
 
+    def test_a_push_or_merge_after_a_switch_in_the_same_command_is_judged_by_the_branch_switched_to(self):
+        """With main checked out, an agent's chained switch then push or merge touches the branch it switched to, not
+        main (vocaro/queuekeeper#390)."""
+        self.git(self.main, "branch", "-q", "feature")
+        for command in ("git switch -q feature; echo f >> f.txt; git commit -qam f; git push -q",
+                        "git switch -qc fresh HEAD; git merge -q --no-ff --no-edit work",
+                        "git checkout -q feature && git push", "git checkout -b other && git merge work",
+                        "git switch --detach HEAD && git merge work", "bash -c 'git switch -q feature; git push'",
+                        "git switch -q feature; git push origin HEAD"):
+            with self.subTest(command=command):
+                self.assertIsNone(self.decision(command, self.main))
+        # Back on main, or never off it, is still refused; so is a branch switched to in another checkout.
+        for command in ("git switch -q feature; git switch -q main; git push",
+                        "git checkout -- file && git push", "git switch -q feature; git push origin main",
+                        f"git -C {self.linked} switch -q feature; git merge work"):
+            with self.subTest(command=command):
+                self.assertIsNotNone(self.decision(command, self.main))
+        # A switch whose branch the guard cannot read is judged by the branch checked out now, which it says.
+        why = self.decision("git switch -q not-a-branch; git push", self.main)
+        self.assertIn("judged by the branch checked out now, main", why)
+
     def test_a_bare_push_is_refused_where_it_would_reach_main(self):
         self.assertIsNotNone(self.decision("git push", self.main))
         self.assertIsNone(self.decision("git push"))

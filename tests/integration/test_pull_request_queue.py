@@ -28,6 +28,12 @@ class PullRequestProject(Fixture):
         approved = patch.object(pull_requests, "recheck", return_value=(True, None))
         approved.start()
         self.addCleanup(approved.stop)
+        # Each queuekeeper/gate status the queue would post on a pull request's head: (head, state, description).
+        self.statuses = []
+        posted = patch.object(pull_requests, "post", lambda root, sha, lane, state, description:
+                              self.statuses.append((sha, f"queuekeeper/{lane}", state, description)))
+        posted.start()
+        self.addCleanup(posted.stop)
 
     def pull(self, number, name, start="origin/main", content="x"):
         """A pull request's head, pushed as GitHub keeps it, and what qk land --pr would queue it with."""
@@ -63,6 +69,44 @@ class PullRequestQueue(PullRequestProject):
         self.assertIn("feature.txt", self.main_files())
         self.assertTrue(run(self.repo, "git", "log", "-1", "--format=%s", main).startswith(
             "Merge pull request #7 from feature-7"))
+
+    def test_the_pull_request_shows_where_its_entry_stands(self):
+        """queued, gated, then landed, as its head's queuekeeper/gate status (vocaro/queuekeeper#394)."""
+        request = self.pull(7, "feature.txt")
+        identifier = self.queue(request)
+        with contextlib.redirect_stdout(io.StringIO()): self.work()
+        landed = self.state(identifier)["landedAs"]
+        self.assertEqual([(sha, context, state) for sha, context, state, _ in self.statuses],
+                         [(request["head"], "queuekeeper/gate", "pending")] * 2
+                         + [(request["head"], "queuekeeper/gate", "success")])
+        self.assertEqual(self.statuses[-1][3], f"landed on main as {landed[:12]}")
+
+    def test_a_pull_request_taken_out_or_sent_back_says_so_on_itself(self):
+        request = self.pull(7, "feature.txt")
+        identifier = self.queue(request)
+        why = "pull request 7's queue label was taken off while it waited in the queue"
+        with patch.object(pull_requests, "recheck", return_value=(False, why)), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.work()
+        self.assertEqual(self.statuses[-1][2:], ("error", f"taken out of the merge queue: {why}"))
+        conflicting = self.pull(8, "shared.txt", content="theirs\n")
+        self.commit("shared.txt", "main-change", content="ours\n")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.queue(conflicting, checked=False)
+        with contextlib.redirect_stdout(io.StringIO()): self.work()
+        self.assertEqual(self.statuses[-1][0], conflicting["head"])
+        self.assertEqual(self.statuses[-1][2], "failure")
+        self.assertIn("sent it back", self.statuses[-1][3])
+
+    def test_entries_of_branches_post_nothing(self):
+        self.statuses.clear()
+        config = self.config()
+        config["integration"] = "direct-main"
+        self.publish(config, "Land branches again")
+        self.commit("a", "a")
+        with patch.object(mq.Queue, "start"), patch("builtins.print"): mq.add(self.repo, "a")
+        with contextlib.redirect_stdout(io.StringIO()): self.work()
+        self.assertEqual(self.statuses, [])
 
     def test_pull_requests_batched_together_each_land_as_their_own_merge(self):
         first, second = self.pull(7, "one.txt"), self.pull(8, "two.txt")
@@ -203,6 +247,9 @@ class LabeledPullRequestsQueued(PullRequestProject):
             mq.queue_labeled(self.repo, say=told.append, quiet=False)
         self.assertEqual(told, ["no pull request labeled queue is waiting to be queued; skipped until pushed again: "
                                 "#7 (it holds a merge)"])
+        # And the pull request says why on itself, once.
+        self.assertEqual([state for _, _, state, _ in self.statuses], ["error"])
+        self.assertIn("not queued: it holds a merge", self.statuses[0][3])
         self.assertEqual(self.scan(self.pull(7, "feature.txt", content="rebased"), refused={7})[1], [7])
 
     def test_an_entry_removed_at_its_head_is_queued_again_while_labeled(self):
