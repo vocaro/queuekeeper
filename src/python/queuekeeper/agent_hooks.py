@@ -31,7 +31,7 @@ SENT_BACK = ("failed", "conflict")
 WAITING = ("queued", "testing", "passed")
 GUARD_SWITCH = "QUEUEKEEPER_GUARD"
 # How a project's changes reach main: queuekeeper.json's "integration", which config.parse checks.
-DIRECT_MAIN, PULL_REQUEST = "direct-main", "pull-request"
+DIRECT_MAIN, PULL_REQUEST, PULL_REQUEST_QUEUE = "direct-main", "pull-request", "pull-request-queue"
 
 
 def git(directory, *words):
@@ -44,11 +44,12 @@ def git(directory, *words):
 
 
 def integration(root):
-    """How the project checked out at root integrates, from its queuekeeper.json: pull-request or direct-main, the
-    default, which a missing or unreadable file gives too. A hook reads it raw, as it must not fail over a setting."""
+    """How the project checked out at root integrates, from its queuekeeper.json: pull-request, pull-request-queue
+    or direct-main, the default, which a missing or unreadable file gives too. A hook reads it raw, as it must not
+    fail over a setting."""
     try: value = json.loads((Path(root) / "queuekeeper.json").read_text()).get("integration", DIRECT_MAIN)
     except (OSError, ValueError, AttributeError): return DIRECT_MAIN
-    return PULL_REQUEST if value == PULL_REQUEST else DIRECT_MAIN
+    return value if value in (PULL_REQUEST, PULL_REQUEST_QUEUE) else DIRECT_MAIN
 
 
 def event():
@@ -366,10 +367,15 @@ def pre_tool_use(payload):
     if not why: return None
     top = git(directory, "rev-parse", "--show-toplevel")
     switch = f"A person can turn this guard off with {GUARD_SWITCH}=off in Claude Code's environment."
-    if top and integration(top) == PULL_REQUEST:
+    mode = integration(top) if top else DIRECT_MAIN
+    if mode == PULL_REQUEST:
         return (f"Queuekeeper refused this: {why}, and in this project changes reach main only through a pull request "
                 "that a person merges. Commit on your own branch, push it and open a pull request, and leave the "
                 f"merge to a person. {switch}")
+    if mode == PULL_REQUEST_QUEUE:
+        return (f"Queuekeeper refused this: {why}, and in this project changes reach main only through a pull request "
+                "that a person labels for the merge queue, which merges it. Commit on your own branch, push it and "
+                f"open a pull request, and leave the rest to a person and the queue. {switch}")
     return (f"Queuekeeper refused this: {why}, and changes reach main only through the merge queue. Commit on your own "
             f"branch and run `qk land --wait` as a background command, following it to its result. {switch}")
 

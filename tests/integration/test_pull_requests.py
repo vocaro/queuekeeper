@@ -184,6 +184,24 @@ class PullRequestCheck(unittest.TestCase):
         self.assertEqual(status, 0, said)
         self.assertEqual(self.posted(), [])
 
+    def test_the_queue_takes_an_open_labeled_pull_request_on_main(self):
+        self.pull_request(labels=[{"name": "queue"}], isDraft=False, title="Add the feature", headRefName="feature")
+        found = pull_requests.for_queue(self.project, 7, "queue")
+        self.assertEqual(found, {"number": 7, "head": self.head, "title": "Add the feature", "headRefName": "feature",
+                                 "url": "https://github.com/o/r/pull/7", "label": "queue"})
+        self.assertEqual(pull_requests.merge_message(found), "Merge pull request #7 from feature\n\nAdd the feature")
+        for fields, said in (({"labels": []}, "has no queue label"),
+                             ({"labels": [{"name": "queue"}], "isDraft": True}, "is a draft"),
+                             ({"labels": [{"name": "queue"}], "baseRefName": "develop"}, "targets develop"),
+                             ({"labels": [{"name": "queue"}], "state": "CLOSED"}, "is closed"),
+                             ({"labels": [{"name": "queue"}], "headRefOid": "0" * 40}, "land it again")):
+            with self.subTest(said=said):
+                self.pull_request(**fields)
+                with self.assertRaisesRegex(ValueError, said): pull_requests.for_queue(self.project, 7, "queue")
+        # Another label name, as pullRequests.label gives.
+        self.pull_request(labels=[{"name": "ship-it"}])
+        self.assertEqual(pull_requests.for_queue(self.project, 7, "ship-it")["label"], "ship-it")
+
     def test_a_head_origin_does_not_have_says_to_check_again(self):
         self.pull_request(headRefOid="0" * 40)
         with self.lane(): status, said = self.qk("7")

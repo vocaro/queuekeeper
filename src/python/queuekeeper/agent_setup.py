@@ -23,7 +23,7 @@ import shlex
 import subprocess
 import sys
 
-from .agent_hooks import DIRECT_MAIN, PULL_REQUEST, integration
+from .agent_hooks import DIRECT_MAIN, PULL_REQUEST, PULL_REQUEST_QUEUE, integration
 
 # The rules, word for word the blocks under "Tell your agents" in the user guide (a test keeps them equal): RULE for
 # a project that lands through the merge queue, PULL_REQUEST_RULE for one that integrates through pull requests.
@@ -47,9 +47,18 @@ needs another check. Check again after each push. Run tests and builds with `qk 
 suites with `qk unittest`, never `python3 -m unittest`. Send a long run's output to a file, never
 through `tail` or `head`, and trim when reading it; `qk progress` says how far a run has got.
 """
-RULES = {DIRECT_MAIN: RULE, PULL_REQUEST: PULL_REQUEST_RULE}
+PULL_REQUEST_QUEUE_RULE = """\
+Never push to main or merge a pull request. Commit on your own branch, push it and open a
+pull request; a person reviews it and labels it for the merge queue, which tests it with the
+pull requests ahead of it and merges it. Run tests and builds with `qk run LANE` or
+`qk admit -- COMMAND`, never bare, so that they wait their turn on the shared Macs. Run unittest
+suites with `qk unittest`, never `python3 -m unittest`. Send a long run's output to a file, never
+through `tail` or `head`, and trim when reading it; `qk progress` says how far a run has got.
+"""
+RULES = {DIRECT_MAIN: RULE, PULL_REQUEST: PULL_REQUEST_RULE, PULL_REQUEST_QUEUE: PULL_REQUEST_QUEUE_RULE}
 # What each integration is called where setup and check name it.
-MODES = {DIRECT_MAIN: "landing through the merge queue", PULL_REQUEST: "integrating through pull requests"}
+MODES = {DIRECT_MAIN: "landing through the merge queue", PULL_REQUEST: "integrating through pull requests",
+         PULL_REQUEST_QUEUE: "landing labeled pull requests through the merge queue"}
 BEGIN = "<!-- queuekeeper:agents begin sha256={} -- written by `qk agents setup`; `qk agents remove` takes it out -->"
 END = "<!-- queuekeeper:agents end -->"
 FENCED = re.compile(r"^<!-- queuekeeper:agents begin sha256=([0-9a-f]{16})\b[^\n]*-->\n(.*?)^<!-- queuekeeper:agents end -->\n?",
@@ -277,7 +286,7 @@ def setup(root, args):
         status = 2
         lines.append(f"{path}: left as it is: {error}")
     for line in lines: print(line)
-    if status == 0 and mode == PULL_REQUEST:
+    if status == 0 and mode in (PULL_REQUEST, PULL_REQUEST_QUEUE):
         print("commit these files on a branch and merge them through a pull request, so that every worktree has them")
     elif status == 0:
         print("commit these files on a branch and land them with `qk land --wait`, so that every worktree has them")
@@ -346,7 +355,7 @@ def check(root, args):
 def doctor_warnings(root, config):
     """A warning for each agent instructions file holding the other integration's rule, unedited, which tells the
     project's agents to reach main the way it does not (vocaro/queuekeeper#374)."""
-    mode = PULL_REQUEST if config.get("integration", DIRECT_MAIN) == PULL_REQUEST else DIRECT_MAIN
+    mode = config.get("integration", DIRECT_MAIN) if config.get("integration") in RULES else DIRECT_MAIN
     warnings = []
     for name in INSTRUCTIONS:
         try: found, intact = find_block((Path(root) / name).read_text())

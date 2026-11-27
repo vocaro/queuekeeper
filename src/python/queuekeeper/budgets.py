@@ -237,7 +237,7 @@ def doctor_warnings(config):
                 "record defers physical devices to this Mac: give it \"here\": \"a physical device, reserved in "
                 "this Mac's device record\"" for name in misplaced_passes(config)]
     if GATE not in lanes: return warnings
-    if config.get("integration", "direct-main") == "direct-main" and "budgetMinutes" not in lanes[GATE]:
+    if config.get("integration", "direct-main") != "pull-request" and "budgetMinutes" not in lanes[GATE]:
         warnings.append(f"gate has no budgetMinutes, so nothing warns when it outgrows its time: set it in the gate "
                         "lane from the gate's measured time")
     if any(takes_device(command) for command in lane_commands(config, GATE)):

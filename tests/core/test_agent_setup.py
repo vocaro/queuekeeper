@@ -178,6 +178,29 @@ class Agents(unittest.TestCase):
         self.assertEqual(self.qk("setup")[0], 0)
         self.assertIn(agent_setup.RULE, (self.root / "AGENTS.md").read_text())
 
+    def test_a_pull_request_queue_project_gets_its_own_rule(self):
+        self.integrate("pull-request-queue")
+        status, said = self.qk("setup")
+        self.assertEqual(status, 0, said)
+        self.assertIn("landing labeled pull requests through the merge queue", said)
+        self.assertIn(agent_setup.PULL_REQUEST_QUEUE_RULE, (self.root / "AGENTS.md").read_text())
+        self.assertEqual(self.qk("check")[0], 0)
+        self.integrate("pull-request")
+        self.assertIn("rule for landing labeled pull requests", self.qk("check")[1])
+
+    def test_pull_request_queue_settings_are_checked(self):
+        from queuekeeper import config
+        base = {"schemaVersion": 1, "name": "x", "integration": "pull-request-queue"}
+        self.assertEqual(config.queue_label(config.parse(json.dumps(base))), "queue")
+        self.assertEqual(config.queue_label(config.parse(json.dumps({**base, "pullRequests": {"label": "ship"}}))),
+                         "ship")
+        for settings, said in (({"label": ""}, "nonempty"), ({"labels": "x"}, "Unknown pullRequests"),
+                               ("queue", "must be an object")):
+            with self.subTest(settings=settings), self.assertRaisesRegex(ValueError, said):
+                config.parse(json.dumps({**base, "pullRequests": settings}))
+        with self.assertRaisesRegex(ValueError, "Unknown integration"):
+            config.parse(json.dumps({**base, "integration": "merge-queue"}))
+
     def test_an_unreadable_queuekeeper_json_gets_the_queues_rule(self):
         (self.root / "queuekeeper.json").write_text("{not json")
         self.assertEqual(self.qk("setup")[0], 0)
@@ -188,7 +211,7 @@ class Agents(unittest.TestCase):
         section = guide[guide.index("### Tell your agents"):]
         section = section[:section.index("\n### ")]
         found = re.findall(r"```markdown\n(.*?)```", section, re.DOTALL)
-        self.assertEqual(found, [agent_setup.RULE, agent_setup.PULL_REQUEST_RULE])
+        self.assertEqual(found, [agent_setup.RULE, agent_setup.PULL_REQUEST_RULE, agent_setup.PULL_REQUEST_QUEUE_RULE])
 
 
 if __name__ == "__main__":

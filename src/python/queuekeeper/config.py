@@ -222,12 +222,33 @@ def lane_devices(lane):
     """Reservations interpreted by the active device provider."""
     return hooks.DEVICES.lane_devices(lane)
 
+# How a project's changes reach main (user guide, Pull requests or the merge queue): the merge queue pushing
+# entries landed with qk land; pull requests a person merges, with no queue; or the merge queue landing pull
+# requests a person labeled, as merge commits (vocaro/queuekeeper#376).
+DIRECT_MAIN, PULL_REQUEST, PULL_REQUEST_QUEUE = "direct-main", "pull-request", "pull-request-queue"
+INTEGRATIONS = (DIRECT_MAIN, PULL_REQUEST, PULL_REQUEST_QUEUE)
+# The label by which a person admits a pull request to the queue, unless pullRequests.label names another.
+QUEUE_LABEL = "queue"
+
+
+def pull_request_settings(settings):
+    if not isinstance(settings, dict): raise ValueError("pullRequests must be an object")
+    if set(settings) - {"label"}: raise ValueError(f"Unknown pullRequests keys: {sorted(set(settings) - {'label'})}")
+    if "label" in settings and (not isinstance(settings["label"], str) or not settings["label"].strip()):
+        raise ValueError("pullRequests.label must be a nonempty string")
+
+
+def queue_label(config):
+    """The label that admits a pull request to the queue of a pull-request-queue project."""
+    return config.get("pullRequests", {}).get("label", QUEUE_LABEL)
+
+
 def parse(source):
     """A project's queuekeeper.json, checked, from its text, wherever that came from."""
     value = json.loads(source)
     if not isinstance(value, dict) or value.get("schemaVersion") != 1:
         raise ValueError("queuekeeper.json requires schemaVersion 1")
-    allowed = {"schemaVersion", "name", "plugins", "lanes", "integration", "repository",
+    allowed = {"schemaVersion", "name", "plugins", "lanes", "integration", "pullRequests", "repository",
                "queue", "release", "testLanes", "gitHooks", "docs", "siblings", "disk"}
     if "spelling" in value: raise ValueError(f"spelling {SPELLING_GONE}")
     if "extensions" in value: raise ValueError(EXTENSIONS_RENAMED)
@@ -250,8 +271,9 @@ def parse(source):
         hooks.CONFIG_KEYS[key](value[key])
     git_hooks(value.get("gitHooks"))
     disk_settings("disk", value.get("disk", {}))
-    if value.get("integration", "direct-main") not in {"direct-main", "pull-request"}:
+    if value.get("integration", DIRECT_MAIN) not in INTEGRATIONS:
         raise ValueError("Unknown integration policy")
+    pull_request_settings(value.get("pullRequests", {}))
     if not isinstance(value.get("lanes", {}), dict):
         raise ValueError("lanes must be an object")
     lanes = value.get("lanes", {})
