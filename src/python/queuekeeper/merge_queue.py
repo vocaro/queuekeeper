@@ -6005,7 +6005,7 @@ class Worker:
                 return (f"{lane} per-test results: none: its command wrote none in its results/ on "
                         f"{lane_wait.farm_mac(self.ran_on)}, which sends back all it writes there")
             return (f"{lane} per-test results: {kept} in {folder}, on this Mac, sent back by {lane_wait.farm_mac(self.ran_on)}; "
-                    f"queuekeeper keeps the newest {remote.DISPATCHES_KEPT} dispatches of a lane")
+                    f"queuekeeper keeps them until a later dispatch of {lane} files its own")
         folder = self.checkout / ".build/queuekeeper" / lane / "results"
         try:
             if folder.stat().st_mtime < int(began): return None  # an earlier run's

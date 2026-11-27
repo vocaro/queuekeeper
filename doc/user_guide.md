@@ -2725,6 +2725,19 @@ and receipt. The shorter `.build/queuekeeper/remote/LANE/` path can still show a
 dispatch while yours runs. Check the receipt's commit and arguments before using it as a
 verdict.
 
+**What a worktree keeps of each dispatch.** What stays under `.dispatches/LANE/` is decided by
+each dispatch's state, never by its age or by how many there are:
+
+- A dispatch that passed goes once a later dispatch of the same lane from the same worktree has
+  filed its results as the latest, and the `qk` process that sent it has ended. While that
+  process runs, it may still be reading its own results, so they stay until the next dispatch
+  after it files. `.build/queuekeeper/remote/LANE/` keeps its own copy of the latest.
+- A dispatch that failed, was stopped, was unmeasured, was lost on the way back, or only
+  prepared stays until the worktree goes. So does one whose receipt cannot be read. These are
+  what you diagnose, and removing the worktree removes them.
+
+Each removal is named on standard error as it happens.
+
 Once the sender has acknowledged a run's journal, a run without a device lease can continue on
 the other Mac if your Mac sleeps or the connection drops. The sender reconnects to collect the
 same run's result. This also applies to `qk remote admit --foreground` without a device lease.
