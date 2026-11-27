@@ -50,6 +50,7 @@ Changing Queuekeeper while other projects' work runs on it has its own rules:
 | `src/python/queuekeeper/merge_queue.py` | Submission, batching, workers and landing |
 | `src/python/queuekeeper/agent_cli.py`, `agent_results.py`, `agent_logs.py`, `recovery.py` | Structured results, resumable log reads and recovery advice |
 | `src/python/queuekeeper/agent_setup.py`, `agent_hooks.py` | `qk agents`, which tells a project's agents how their work reaches main, through the queue or a pull request, and the Claude Code hooks it installs (`qk hook`) |
+| `src/python/queuekeeper/pull_requests.py` | `qk pr check`, which runs lanes on a GitHub pull request merged with its base and posts each result as a `queuekeeper/LANE` commit status through `gh` |
 | `src/python/queuekeeper/worktree_ownership.py` | Records of who made each scratch worktree, and recovery of one its maker left |
 | `src/python/queuekeeper/resources.py` | Heavy-work admission on one Mac |
 | `src/python/queuekeeper/remote.py`, `offload_host.py` | Placement and running work on another Mac |
