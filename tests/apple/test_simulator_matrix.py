@@ -1928,5 +1928,36 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assertFalse((self.state / "simctl.log").exists())
 
 
+class SuiteSecondsTests(unittest.TestCase):
+    """suite_seconds over fragments of `xcresulttool get test-results tests`, as Xcode 27.2 writes them (#379)."""
+
+    @staticmethod
+    def record(*suites):
+        bundle = {"nodeType": "Unit test bundle", "name": "T", "children": [
+            {"nodeType": "Test Suite", "name": name, "children": cases} for name, cases in suites]}
+        return {}, {"testNodes": [bundle]}
+
+    def test_a_parameterized_test_counts_the_sum_of_its_arguments_not_one_cases_seconds(self):
+        cases = [{"nodeType": "Arguments", "name": f"value: {n}", "result": "Passed", "durationInSeconds": 10.5 + n / 10}
+                 for n in range(6)]
+        parameterized = {"nodeType": "Test Case", "name": "paints(_:)", "result": "Passed", "durationInSeconds": 10.71,
+                         "children": cases}
+        plain = {"nodeType": "Test Case", "name": "opens()", "result": "Passed", "durationInSeconds": 1.5}
+        seconds = matrix.suite_seconds(None, self.record(("Highlights", [parameterized, plain])))
+        self.assertAlmostEqual(seconds["T/Highlights"], sum(case["durationInSeconds"] for case in cases) + 1.5)
+
+    def test_plain_swift_testing_and_xctest_cases_keep_their_own_seconds(self):
+        swift_testing = {"nodeType": "Test Case", "name": "opens()", "result": "Passed", "durationInSeconds": 2.25,
+                         "children": [{"nodeType": "Failure Message", "name": "x"}]}
+        xctest = {"nodeType": "Test Case", "name": "testOpens()", "result": "Passed", "durationInSeconds": 0.75}
+        seconds = matrix.suite_seconds(None, self.record(("New", [swift_testing]), ("Old", [xctest])))
+        self.assertEqual(seconds, {"T/New": 2.25, "T/Old": 0.75})
+
+    def test_arguments_without_seconds_leave_the_cases_own(self):
+        case = {"nodeType": "Test Case", "name": "paints(_:)", "durationInSeconds": 3.0,
+                "children": [{"nodeType": "Arguments", "name": "value: 1"}]}
+        self.assertEqual(matrix.suite_seconds(None, self.record(("S", [case]))), {"T/S": 3.0})
+
+
 if __name__ == "__main__":
     unittest.main()

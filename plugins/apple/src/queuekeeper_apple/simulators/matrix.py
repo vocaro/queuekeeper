@@ -348,6 +348,15 @@ def packed(tests, partial, seconds, count):
         for names in shards.packed(units, seconds, count)]
 
 
+def case_seconds(node):
+    """A Test Case node's seconds. For a parameterized Swift Testing test the node's own duration is about one
+    argument's, so the sum of its Arguments children's is the test's; any other test case's is its own."""
+    arguments = [child for child in node.get("children", []) if child.get("nodeType") == "Arguments"
+                 and child.get("durationInSeconds") is not None]
+    if arguments: return sum(float(child["durationInSeconds"]) for child in arguments)
+    return float(node.get("durationInSeconds") or 0)
+
+
 def suite_seconds(bundle, record=None):
     """{Bundle/Suite: seconds} over a result bundle's test cases, or {} when xcresulttool cannot read it.
     record is the bundle's, as bundle_record read it, when it has been read already."""
@@ -359,7 +368,7 @@ def suite_seconds(bundle, record=None):
         kind = node.get("nodeType")
         if kind in ("Unit test bundle", "UI test bundle", "Test Suite") and len(path) < 2: path = [*path, node.get("name")]
         if kind == "Test Case" and len(path) == 2:
-            seconds["/".join(path)] = seconds.get("/".join(path), 0.0) + float(node.get("durationInSeconds") or 0)
+            seconds["/".join(path)] = seconds.get("/".join(path), 0.0) + case_seconds(node)
             return
         for child in node.get("children", []): walk(child, path)
     for node in tests.get("testNodes", []): walk(node, [])
