@@ -8,8 +8,6 @@ them through the expensive test suites once, pushing to `main` only what passed.
 
 https://github.com/user-attachments/assets/82de4721-3cc8-42db-9d78-40847ad809f2
 
-<sub>The dashboard in 23 seconds. The video is also in this repository as [assets/queuekeeper-sizzle.mp4](assets/queuekeeper-sizzle.mp4).</sub>
-
 ## Why another merge queue?
 
 When several agents work in parallel, their builds and tests can still compete for the same Mac,
