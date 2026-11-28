@@ -171,6 +171,12 @@ NO_VERDICT_RUNS = 3
 # queue.noVerdictRuns does not count, which would otherwise retry without end a lane whose screen locks during every
 # run. The number is the owner's judgment, accepted on 2026-11-09, not a measurement (vocaro-engineering#293).
 LOCKED_SCREEN_RUNS = 5
+# How many runs of one retry series may give no verdict for a verified fault of the other Mac that ran them (an exact
+# terminal receipt for a recognized host cause, gate_host_fault with its receiver) before the batch comes back: the
+# runs queue.noVerdictRuns does not count, as the owner decided on 2026-11-27 (vocaro/queuekeeper#68), matching the
+# locked screen's rule and its number (vocaro-engineering#293), which would otherwise retry without end a lane
+# whose Mac faults on every run.
+HOST_FAULT_RUNS = LOCKED_SCREEN_RUNS
 # Seconds each retry waits for the host to settle, by admission's load and memory test (resources.pressure), and
 # between its looks. A retry started at once met the load that voided the run it repeats, and each such run cost
 # mpm's queue a gate of about an hour (#124); a wait no longer than that run costs no more than the retry it saves.
@@ -4564,6 +4570,7 @@ class Worker:
         self.suspects = 0  # how many of the oldest entries hold a commit that fails
         self.no_verdicts = 0  # the runs in a row that gave no verdict
         self.locked_screens = 0  # the runs in a row a screen locked during
+        self.host_faults = 0  # this retry series' runs a verified fault of another Mac voided (HOST_FAULT_RUNS)
         self.only_host_faults = True  # every no-verdict attempt in this retry series has host fault evidence
         self.retrying = tuple(progress.get("retrying", ())) if progress else ()  # the batch that gave no verdict
         self.local_retry_lane = progress.get("local_retry_lane") if progress else None
@@ -4574,7 +4581,9 @@ class Worker:
             self.limit, self.suspects = progress.get("limit"), progress.get("suspects", 0)
             self.no_verdicts = progress.get("no_verdicts", 0)
             self.locked_screens = progress.get("locked_screens", 0)
-            self.only_host_faults = progress.get("only_host_faults", not (self.no_verdicts or self.locked_screens))
+            self.host_faults = progress.get("host_faults", 0)
+            self.only_host_faults = progress.get("only_host_faults",
+                                                 not (self.no_verdicts or self.locked_screens or self.host_faults))
         # The lanes whose next run goes only to a Mac whose screen reads unlocked, since a locked screen left their
         # last run without a verdict (screen_locked, vocaro-engineering#293).
         self.unlocked = set(progress.get("unlocked", ())) if progress else set()
@@ -4650,7 +4659,9 @@ class Worker:
         progress = {"limit": self.limit, "suspects": self.suspects, "no_verdicts": self.no_verdicts}
         if self.unlocked: progress["unlocked"] = sorted(self.unlocked)
         if self.locked_screens: progress["locked_screens"] = self.locked_screens
-        if self.no_verdicts or self.locked_screens: progress["only_host_faults"] = self.only_host_faults
+        if self.host_faults: progress["host_faults"] = self.host_faults
+        if self.no_verdicts or self.locked_screens or self.host_faults:
+            progress["only_host_faults"] = self.only_host_faults
         if self.retrying: progress["retrying"] = list(self.retrying)
         if self.local_retry_lane is not None: progress["local_retry_lane"] = self.local_retry_lane
         return progress
@@ -7767,7 +7778,8 @@ class Worker:
         gate lane. A gate still tests the exact tree that it would push if its prefix lands. The ordinary stack
         handles an unavailable Mac, a failed prefix, or a changed base without a second publication path.
         """
-        if len(batch) < 2 or self.no_verdicts or self.locked_screens or getattr(self, "retrying", ()): return batch, ()
+        if len(batch) < 2 or self.no_verdicts or self.locked_screens or getattr(self, "host_faults", 0) \
+                or getattr(self, "retrying", ()): return batch, ()
         if any(entry.get("waitsFor") or entry["state"] != QUEUED
                                  or entry["id"] in self.parallel_prefix for entry in batch):
             return batch, ()
@@ -7894,7 +7906,7 @@ class Worker:
                         entries=[entry["id"] for entry in applied], bisect=bisect)
 
     def reset_no_verdict(self):
-        self.no_verdicts = self.locked_screens = 0
+        self.no_verdicts = self.locked_screens = self.host_faults = 0
         self.only_host_faults = True
         self.retrying = ()
         self.local_retry_lane = None
@@ -7984,8 +7996,10 @@ class Worker:
         # any other cause ends the row.
         if not (result == resources.BUSY and runner.lane_now and runner.needs_unlocked(runner.lane_now[0], config)):
             self.locked_screens = 0
-        self.no_verdicts += 1
         runs = no_verdict_runs(config)
+        if log is not None and getattr(runner, "gate_remote_host_fault", None) == log:
+            return self.host_fault(config, applied, result, log, runner, runs)
+        self.no_verdicts += 1
         cause = runner.no_verdict_cause(result, log)
         gave = (f"the lanes gave no verdict in {self.no_verdicts} run{'' if self.no_verdicts == 1 else 's'} in a "
                 f"row, the last with exit {result}{runner.ran_where}, {cause}")
@@ -7993,19 +8007,6 @@ class Worker:
             reason = f"{gave}, the most queue.noVerdictRuns allows ({runs})" + runner.shared_timing(result, config)
             fields = {"failureKind": "host"} if self.only_host_faults else {}
             return self.send_back_no_verdict(applied, log, reason, runner, **fields)
-        if log is not None and getattr(runner, "gate_remote_host_fault", None) == log:
-            lane = runner.failed_lane
-            lanes = config.get("lanes", {})
-            settings = lanes.get(lane)
-            if settings is not None and not settings.get("foreground"):
-                try:
-                    declined = remote.here_unfit(bool(settings.get("wholeHost")), admission(settings) == "exclusive",
-                                                **remote.lane_needs(lanes, lane))
-                except ValueError as error:
-                    declined = str(error)
-                if declined is None:
-                    self.local_retry_lane = lane
-                    self.say(f"{lane}: the next attempt goes only to this Mac after the confirmed host build-cache fault")
         self.say(f"no verdict (exit {result})" + (f" from {runner.ran_on}" if runner.ran_on else "")
                  + f", run {self.no_verdicts} of at most {runs}"
                  # Name the reason an attempt could not start or measure the lane while retries remain.
@@ -8013,6 +8014,36 @@ class Worker:
         # Every retry waits, so that none starts into the load that voided the run before it, or another Mac's.
         busy = self.settle("the lanes run", macs=lambda: self.retry_macs(config, runner))
         if busy: return self.send_back_no_verdict(applied, log, f"{gave}, and {busy}", runner)
+        return NO_VERDICT_OUTCOME
+
+    def host_fault(self, config, applied, result, log, runner, runs):
+        """Retry applied after a run another Mac voided by a verified fault of its own (gate_host_fault with its
+        receiver), which queue.noVerdictRuns does not count, as the owner decided on 2026-11-27
+        (vocaro/queuekeeper#68), as for a locked screen (vocaro-engineering#293). HOST_FAULT_RUNS such runs in one
+        retry series send the batch back. The next attempt goes only to this Mac when the lane may run here."""
+        self.host_faults += 1
+        lane = runner.failed_lane
+        fault = f"{lane} gave no verdict (exit {result}){runner.ran_where} for a verified host build-cache fault of that Mac"
+        if self.host_faults >= HOST_FAULT_RUNS:
+            fields = {"failureKind": "host"} if self.only_host_faults else {}
+            return self.send_back_no_verdict(applied, log, f"{fault}, in {self.host_faults} runs of this batch, "
+                                             f"the most HOST_FAULT_RUNS allows ({HOST_FAULT_RUNS})", runner, **fields)
+        lanes = config.get("lanes", {})
+        settings, placed = lanes.get(lane), "; its next attempt is placed as usual"
+        if settings is not None and not settings.get("foreground"):
+            try:
+                declined = remote.here_unfit(bool(settings.get("wholeHost")), admission(settings) == "exclusive",
+                                            **remote.lane_needs(lanes, lane))
+            except ValueError as error:
+                declined = str(error)
+            if declined is None:
+                self.local_retry_lane = lane
+                placed = "; its next attempt goes only to this Mac"
+        self.say(f"no verdict: {fault}, which queue.noVerdictRuns does not count (still {self.no_verdicts} of at "
+                 f"most {runs}); {self.host_faults} such run{'' if self.host_faults == 1 else 's'} of this batch, and "
+                 f"{HOST_FAULT_RUNS} send it back{placed}")
+        busy = self.settle("the lanes run", macs=lambda: self.retry_macs(config, runner))
+        if busy: return self.send_back_no_verdict(applied, log, f"{fault}, and {busy}", runner)
         return NO_VERDICT_OUTCOME
 
     def system_crash(self, config, applied, log, runner, lane, commit, crash):

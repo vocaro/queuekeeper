@@ -589,8 +589,13 @@ events, and goes on to later entries. Newly arrived entries have their own retry
 - **Confirmed remote build-cache faults.** When the exact remote attempt completes unmeasured and
   its lane receipt attributes that result to the receiving Mac's build cache, the next attempt
   runs with `--here` if this Mac's settings allow it and the lane does not need the foreground.
-  This still counts toward `queue.noVerdictRuns`. An older receipt with only `hostFault`, an
-  interrupted dispatch, or an unmatched receiver leaves placement unchanged.
+  It does not count toward `queue.noVerdictRuns`, as the owner decided on 2026-11-27
+  ([#68](https://github.com/vocaro/queuekeeper/issues/68)), matching the locked screen's rule;
+  `Worker.host_fault` counts it in `host_faults` instead, and `HOST_FAULT_RUNS` (5, the locked
+  screen's number) such runs of one batch send it back with `failureKind` `host`, so a Mac that
+  faults every run cannot retry it without end. The worker log names the run as not counted. An
+  older receipt with only `hostFault`, an interrupted dispatch, or an unmatched receiver leaves
+  placement unchanged and counts.
 - **Locked screens.** An exit 3, or a lane at its limit, whose last screen reading (receipt's
   `screenAfter`, else the log's last `screen:` line) shows a lock does not count; the lane runs next
   as `qk run --unlocked-screen LANE`. `LOCKED_SCREEN_RUNS` (5) runs in a row that started unlocked
@@ -1704,7 +1709,8 @@ each uses.
     a time per worker; whole-host gates' `cpuBusy` or no-verdict reruns rising while quick checks
     overlap them would prove it wrong* ([#255](https://github.com/vocaro/queuekeeper/issues/255)).
 29. A run with no verdict blames nobody and reruns once the Mac settles. Three in a row send
-    back the batch. Runs voided by a locked screen have a separate limit of five.
+    back the batch. Runs voided by a locked screen, or by a verified fault of the other Mac, have a
+    separate limit of five.
 30. `--front` and `--no-gate` are for emergencies, with the reason recorded.
 
 Rules 27, 28 and 30 are the only exceptions to rule 2, and none gives a class of work priority in
