@@ -9105,10 +9105,35 @@ class SharedCheckout(Fixture):
             self.addCleanup(patcher.stop)
 
     def held(self, command, cwd):
-        process = subprocess.Popen(command, cwd=cwd)
+        """A process left running in cwd, in a group of its own so that cleanup ends what it starts as well: an `sh`
+        that runs `sleep 300; exit 0` forks the `sleep` rather than replacing itself with it (#381)."""
+        process = subprocess.Popen(command, cwd=cwd, start_new_session=True)
         self.addCleanup(process.wait)
-        self.addCleanup(process.kill)
+        self.addCleanup(self.release, process)
         return process
+
+    @staticmethod
+    def release(process):
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):  # the group is gone, or only a zombie remains on macOS
+            pass
+
+    def test_releasing_a_holder_ends_the_sleep_its_shell_started(self):
+        """#381: the shell is not the only process a holder leaves, so none of the group survives its release."""
+        holder = self.held(["sh", "-c", "sleep 300; exit 0"], self.repo)
+        children = []
+        deadline = time.monotonic() + stretched(30)
+        while not children and time.monotonic() < deadline:
+            children = subprocess.run(["pgrep", "-P", str(holder.pid)], capture_output=True, text=True).stdout.split()
+            time.sleep(0.05)
+        self.assertTrue(children, "the shell never started its sleep")
+        self.release(holder)
+        holder.wait()
+        deadline = time.monotonic() + stretched(30)
+        while time.monotonic() < deadline and subprocess.run(["kill", "-0", children[0]], capture_output=True).returncode == 0:
+            time.sleep(0.05)
+        self.assertNotEqual(subprocess.run(["kill", "-0", children[0]], capture_output=True).returncode, 0)
 
     def python(self, cwd):
         """A Python left running in cwd, which may import the toolkit from it as `python3 -c` does."""
