@@ -202,7 +202,7 @@ LANE_KEYS = frozenset({"command", "resource", "minimumTests", "timeout", "foregr
                        "deviceRunMinutes", "stall", "unity", "arguments", "idioms", "dimensions", "exactTests",
                        "failedTests", "labels", "sandbox", "timing", "targetMinutes", "notice", "disk", "inputs",
                        "environmentInputs",
-                       "testAllowance"})
+                       "testAllowance", "unmovedMinutes"})
 # The lane keys above that a plugin shipped here adds (hooks.LANE_KEYS), by its module: a project that uses one
 # without the plugin is told which to switch on.
 PLUGIN_LANE_KEYS = {"display": "queuekeeper_mac_desktop", "unity": "queuekeeper_unity", "devices": "queuekeeper_mobile",
@@ -312,6 +312,7 @@ def parse(source):
         screen(name, lane)
         compile_first(name, lane)
         stall(name, lane)
+        unmoved_minutes(name, lane)
         lane_timing.check(name, lane)
         failed_tests_setting(name, lane)
         sandbox.check(name, lane)
@@ -408,6 +409,17 @@ def stall(name, lane):
         raise ValueError(f"{name}.stall stop needs a reason naming the healthy-run measurement and bound")
     if unadmitted(lane):
         raise ValueError(f"{name}.stall needs an admitted leaf lane, not a self lane's polling wrapper")
+
+
+def unmoved_minutes(name, lane):
+    """A lane's unmovedMinutes: how long the files its admitted work writes may go unchanged before `qk queue doctor`
+    notes its holder as unmoved, the project's own bound for a lane its Mac's past holds would misjudge, such as a UI-test
+    lane that writes little until a test bundle ends (vocaro/queuekeeper#70). A display bound only: nothing stops the
+    lane for it."""
+    if "unmovedMinutes" not in lane: return
+    minutes = lane["unmovedMinutes"]
+    if type(minutes) not in (int, float) or not 0 < minutes < float("inf") or round(minutes * 60) < 1:
+        raise ValueError(f"{name}.unmovedMinutes must be a positive number of minutes")
 
 
 def failed_tests_setting(name, lane):

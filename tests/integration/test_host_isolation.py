@@ -340,7 +340,7 @@ class HostIsolationTests(unittest.TestCase):
         cli = host_isolation.cli
         names = (cli.parallel.RESULTS_VARIABLE, "QUEUEKEEPER_STALE_MODULES_ROOT", cli.SELF_LANE, host_isolation.app_registrations.RUN,
                  host_isolation.devices.WINDOW, host_isolation.devices.OWNER, "QUEUEKEEPER_ROOT", "QUEUEKEEPER_LANE_PROGRESS_RUN",
-                 host_isolation.remote.lane_wait.LANE)
+                 host_isolation.remote.lane_wait.LANE, resources.UNMOVED_VARIABLE)
         source = str(Path(resources.__file__).resolve().parents[1])
         for name in names:
             for mode, imports, expected in (("isolated", "import host_isolation; ", "None"), ("control", "", "outer")):

@@ -889,6 +889,17 @@ The user guide's [Receipts and outcomes](user_guide.md#receipts-and-outcomes) an
   gets the default. The note's words say which bound applied and from how many holds. This is
   a display rule only. The proposed stopping bound in vocaro/queuekeeper#70 is separate and not
   enabled.
+- **A lane's declared quiet bound.** A lane's `unmovedMinutes` (`config.unmoved_minutes`) comes
+  ahead of the measure and the default, shorter than the default or longer, as the project knows
+  the lane and the admission log can't tell a long healthy hold from a stalled one. `qk run` puts
+  it in the lane's environment in whole seconds (`resources.UNMOVED_VARIABLE`), and the lane's own
+  admission, or one its command takes, records it in the guard entry as `unmovedSeconds`
+  (`resources.unmoved_bound`). It's an environment variable rather than an argument because the
+  admission that holds the slots may be taken by what the lane starts, such as `qk unittest` or
+  `qk admit`. `qk run` sets it, or unsets it, for every lane, so a lane that declares none
+  doesn't pass on an outer lane's, and `host_isolation` drops it so a test's admission doesn't
+  record the gate's. `offload_host.admissions_now` gives it as the holder's `unmovedSeconds`, and
+  `merge_queue.unmoved_bound` uses it first.
 
 `qk doctor --check-only` skips repairs and invokes only plugin callbacks that opt in through
 `plugins.DOCTOR_WITHOUT_REPAIRS`. A read-only callback maps to itself. A normal callback that

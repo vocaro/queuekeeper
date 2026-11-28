@@ -172,7 +172,7 @@ def guard_path(environment):
 FIELDS, LATER = {"pid": int, "start": str, "label": str, "exclusive": bool}, {"model": bool, "admitted": str, "uncertain": bool,
                                                                                 "wholeHost": bool, "origin": dict,
                                                                                 "directory": str, "progressRun": str,
-                                                                                "limitEndsAt": str}
+                                                                                "limitEndsAt": str, "unmovedSeconds": int}
 # Where work that asks for admission comes from, as JSON: another Mac's runs of a dispatch read it from the Mac that
 # sent them (remote.dispatch), since their own checkout is a copy that names no session (work_origin).
 ORIGIN = "QUEUEKEEPER_ADMISSION_ORIGIN"
@@ -243,6 +243,19 @@ def work_place(environment=None):
     folder = environment.get(run_progress.VARIABLE)
     if folder and os.path.isdir(folder): found["progressRun"] = os.path.abspath(folder)
     return {key: path for key, path in found.items() if os.path.isabs(path) and len(path) <= PLACE_LIMIT}
+
+
+# How long, in whole seconds, the lane that `qk run` runs says the files its admitted work writes may go unchanged
+# (config.unmoved_minutes), for the admission it or what it starts takes to record (unmoved_bound).
+UNMOVED_VARIABLE = "QUEUEKEEPER_LANE_UNMOVED_SECONDS"
+
+
+def unmoved_bound(environment=None):
+    """{"unmovedSeconds": seconds} of the bound UNMOVED_VARIABLE names, for a guard entry, which queue doctor's note on
+    an unmoved holder uses ahead of any other (merge_queue.unmoved_bound, vocaro/queuekeeper#70); {} when it names none
+    or no positive whole number of seconds. It never raises."""
+    found = (os.environ if environment is None else environment).get(UNMOVED_VARIABLE, "")
+    return {"unmovedSeconds": int(found)} if re.fullmatch(r"[0-9]{1,9}", found) and int(found) > 0 else {}
 
 
 def whence(origin):
@@ -1646,7 +1659,7 @@ class Admission:
                                                    **({"limitEndsAt": self._limit_ends()} if self.limit else {}),
                                                    **({"wholeHost": True} if self.whole_host else {}),
                                                    **({"origin": self.origin} if self.origin else {}),
-                                                   **work_place()}
+                                                   **work_place(), **unmoved_bound()}
                 publish_guard(self.guard, state)
             except BaseException:
                 # An interrupt can follow the guard's atomic rename. Keep the opening record if the guard

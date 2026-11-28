@@ -102,6 +102,23 @@ class ConfigurationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Lane group group takes only"):
             settings(["PROJECT_SIM_RUNTIME"], group=True)
 
+    def test_a_lane_s_unmoved_bound_is_a_positive_number_of_minutes(self):
+        """vocaro/queuekeeper#70: a project declares how long a quiet lane's files may go unchanged before queue doctor
+        notes its holder, and only on a lane, not a group."""
+        def settings(minutes, group=False):
+            lanes = {"ui": {"command": ["./ui-tests"]}}
+            target = lanes.setdefault("all", {"parallel": ["ui"]}) if group else lanes["ui"]
+            target["unmovedMinutes"] = minutes
+            return config.parse(json.dumps({"schemaVersion": 1, "name": "Example", "lanes": lanes}))
+
+        self.assertEqual(settings(90)["lanes"]["ui"]["unmovedMinutes"], 90)
+        self.assertEqual(settings(0.5)["lanes"]["ui"]["unmovedMinutes"], 0.5)
+        for wrong in (0, -5, 0.001, True, "90", None):
+            with self.subTest(wrong), self.assertRaisesRegex(ValueError, r"ui\.unmovedMinutes must be a positive number"):
+                settings(wrong)
+        with self.assertRaisesRegex(ValueError, "Lane group all takes only"):
+            settings(90, group=True)
+
     def test_the_schema_lists_the_lane_and_group_keys_config_accepts(self):
         # vocaro-engineering#248: config took unlockedScreen, and lane groups, while the schema refused them.
         def drift(schema):

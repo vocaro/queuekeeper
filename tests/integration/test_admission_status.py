@@ -512,6 +512,27 @@ class HolderActivityTests(Namespace):
         with patch.object(os, "getcwd", return_value="/" + "x" * 2000):
             self.assertEqual(resources.work_place({}), {})
 
+    def test_admission_records_the_unmoved_bound_its_lane_declares(self):
+        """vocaro/queuekeeper#70: `qk run` names a lane's unmovedMinutes in seconds (resources.UNMOVED_VARIABLE), the
+        admission records it, and the reading gives it as the holder's unmovedSeconds."""
+        self.work.mkdir()
+        before = os.getcwd()
+        os.chdir(self.work)
+        self.addCleanup(os.chdir, before)
+        with patch.dict(os.environ, {resources.UNMOVED_VARIABLE: "5400"}), contextlib.redirect_stderr(StringIO()), \
+                resources.Admission("python3 scripts/qk run ui", timeout=0) as admission:
+            entry = json.loads(self.guard.read_text())["owners"][admission.identity]
+            self.write(self.lanes / "gate" / "run.log", 0)
+            (holder,) = self.read()["holders"]
+        self.assertEqual((entry["unmovedSeconds"], holder["unmovedSeconds"]), (5400, 5400))
+        # A lane that declares none, or a value that is no positive whole number of seconds, records none.
+        for wrong in ("", "0", "-5", "1.5", "²", "9" * 12):
+            with self.subTest(wrong): self.assertEqual(resources.unmoved_bound({resources.UNMOVED_VARIABLE: wrong}), {})
+        self.assertEqual(resources.unmoved_bound({}), {})
+        self.assertIsNone(self.holder(directory=str(self.work))["unmovedSeconds"])
+        self.assertIsNone(resources.entries({"vocaroEngineering": 1,
+                                             "owners": {"a": self.owner("x", unmovedSeconds="5400")}}))
+
     def logged(self, label, *helds, outcome="released", name=resources.LOG):
         """An `ended` line in the namespace's admission log for each of helds, as Admission writes it."""
         self.directory.mkdir(parents=True, exist_ok=True)
