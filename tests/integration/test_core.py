@@ -1,5 +1,5 @@
 import contextlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import fcntl
 from io import StringIO
 import json
@@ -2446,6 +2446,57 @@ class ResourceTests(unittest.TestCase):
             with resources.Admission("beside", model=True, timeout=0): self.fail("admitted beside exclusive work")
         exclusive.stdin.close()
         self.assertEqual((generate.wait(timeout=stretched(30)), exclusive.wait(timeout=stretched(30))), (0, 0))
+
+    def wait_behind(self, holder, waiter_timeout, **options):
+        """Wait waiter_timeout seconds behind holder, held in this process as exclusive or whole-host work with options:
+        the holder's guard entry, the TimeoutError that ended the wait, what the wait printed and how long it took."""
+        os.environ["HEAVY_SETTLE_SECONDS"] = "0"
+        printed = StringIO()
+        with contextlib.redirect_stderr(StringIO()), resources.Admission(holder, timeout=0, **options) as held:
+            entry = json.loads(held.guard.read_text())["owners"][held.identity]
+            with patch.dict(os.environ), contextlib.redirect_stderr(printed):
+                os.environ.pop(resources.TOKEN)
+                began = time.monotonic()
+                with self.assertRaises(TimeoutError) as ended:
+                    with resources.Admission("FlexolioLib check", timeout=waiter_timeout): self.fail("admitted beside it")
+                took = time.monotonic() - began
+        return entry, ended.exception, printed.getvalue(), took
+
+    def test_a_holder_whose_stated_limit_ends_after_the_deadline_is_said_at_once_and_the_wait_goes_on(self):
+        """vocaro/queuekeeper#255: an exclusive or whole-host holder admitted with a time limit of its own that ends
+        after a waiter's deadline (2026-11-27: 8,100 s against 5,400 s) is named at once, with when its limit ends, the
+        waiter's deadline and how to outlast it, once; the waiter still waits out its whole deadline."""
+        for kind in ({"exclusive": True}, {"whole_host": True}):
+            with self.subTest(**kind):
+                entry, error, printed, took = self.wait_behind("Pagepour bench", 0.3, limit=8100, **kind)
+                ends = datetime.fromisoformat(entry["limitEndsAt"])
+                self.assertAlmostEqual((ends - datetime.now(timezone.utc)).total_seconds(), 8100, delta=30)
+                late = [line for line in printed.splitlines() if "time limit" in line]
+                self.assertEqual(len(late), 1, printed)
+                self.assertIn(f"heavy: Pagepour bench holds the host with a time limit that ends at {entry['limitEndsAt']}, "
+                              "after this wait's deadline, ", late[0])
+                self.assertIn("It waits to its deadline all the same", late[0])
+                outlast = int(re.search(r"--timeout (\d+)", late[0]).group(1))
+                self.assertAlmostEqual(outlast, 8100 + 60, delta=30)
+                self.assertIn("or run the work on another Mac", late[0])
+                # Said before the first five-minute report would have been due, and the wait was not shortened.
+                self.assertLess(printed.index("time limit"), printed.index("heavy: waiting"))
+                self.assertGreaterEqual(took, 0.3)
+                self.assertIn(f"Pagepour bench's time limit ends at {entry['limitEndsAt']}, after this wait's deadline; "
+                              f"a wait of {outlast}s outlasts it", str(error))
+                self.assertIn("nothing ran", str(error))
+
+    def test_a_holder_whose_limit_ends_in_time_or_that_states_none_waits_as_before(self):
+        """vocaro/queuekeeper#255: a holder whose stated limit ends before the waiter's deadline, or that states no limit
+        of its own, adds nothing to the wait's words."""
+        for name, options in [("limit within the deadline", {"limit": 0.5}), ("no limit", {})]:
+            with self.subTest(name):
+                entry, error, printed, took = self.wait_behind("Pagepour bench", 2, exclusive=True, **options)
+                self.assertEqual("limitEndsAt" in entry, "limit" in options)
+                self.assertNotIn("time limit", printed)
+                self.assertNotIn("time limit", str(error))
+                self.assertIn("it waits behind exclusive work holding the host: Pagepour bench", str(error))
+                self.assertGreaterEqual(took, 2)
 
     def test_a_model_run_inside_heavy_admission_is_refused_and_inside_model_or_exclusive_admission_reuses_it(self):
         guard = Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard")

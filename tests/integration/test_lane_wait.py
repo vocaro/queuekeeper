@@ -161,6 +161,8 @@ class Waits(Named):
         admission.waiting, admission.refusal, admission.poll, admission.timeout = None, None, 0.0, timeout
         admission.descriptors, admission.held_model, admission.label, admission.counted = [(1, 0)], None, "gate", []
         admission.identity, admission.exclusive, admission.model = "test", False, False
+        # Waiting behind no holder whose stated time limit it judges (#255).
+        admission.holder_limit, admission.said_late = None, set()
         def attempt():
             step = attempts.pop(0)
             if step is True: return True

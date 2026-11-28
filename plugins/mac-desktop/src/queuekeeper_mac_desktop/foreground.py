@@ -144,8 +144,7 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
         now = time.monotonic()
         if (holder, due) != judged:
             # Judged against each holder, and again when its expected release moves.
-            release = reservations.moment(due)
-            gives_up = min(now + GRACE, deadline) if release is not None and release > ends else None
+            gives_up = min(now + GRACE, deadline) if lane_wait.after_deadline(due, ends) is not None else None
             judged = (holder, due)
         if judged != announced:
             after = (f", after this wait's deadline, {ends.isoformat()}: looking again for {gives_up - now:.0f}s in case "

@@ -1375,7 +1375,9 @@ Three kinds of marker hold work, each freed differently:
 
 **The guard's format.** JSON with `"vocaroEngineering": 1` and `owners`, an object of entries by
 identity. Each entry has a positive integer `pid`, a `start` string, a `label` string and an
-`exclusive` flag, and may have `model`, `uncertain` and `admitted`. Unknown fields are read past.
+`exclusive` flag, and may have `model`, `uncertain` and `admitted`. It may also have `limitEndsAt`,
+the ISO 8601 time when a limit its caller stated ends, which a waiter judges its deadline by
+(`lane_wait.after_deadline`, shared with the foreground wait). Unknown fields are read past.
 A guard with one bad entry, or without an `owners` object, is out of format as a whole: admission
 and `qk admissions recover` refuse it, never overwrite it, and nested work inside it fails.
 

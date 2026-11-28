@@ -171,7 +171,8 @@ def guard_path(environment):
 # such as a newer toolkit may add, is read past.
 FIELDS, LATER = {"pid": int, "start": str, "label": str, "exclusive": bool}, {"model": bool, "admitted": str, "uncertain": bool,
                                                                                 "wholeHost": bool, "origin": dict,
-                                                                                "directory": str, "progressRun": str}
+                                                                                "directory": str, "progressRun": str,
+                                                                                "limitEndsAt": str}
 # Where work that asks for admission comes from, as JSON: another Mac's runs of a dispatch read it from the Mac that
 # sent them (remote.dispatch), since their own checkout is a copy that names no session (work_origin).
 ORIGIN = "QUEUEKEEPER_ADMISSION_ORIGIN"
@@ -992,8 +993,15 @@ class AdmissionRecordError(RuntimeError):
 
 class Admission:
     def __init__(self, label, exclusive=False, timeout=5400, model=False, whole_host=False, place=None, placement=None,
-                 supervised=False, *, wait_lane=None):
+                 supervised=False, *, wait_lane=None, limit=None):
         self.label, self.exclusive, self.timeout = label, exclusive, timeout
+        # The seconds its command may run, when its caller states a limit of its own (`qk admit --time-limit`): its
+        # entry then says when that limit ends (limitEndsAt), which a waiter behind exclusive or whole-host work
+        # judges its own deadline by (holder_limit, vocaro/queuekeeper#255). None states nothing.
+        self.limit = limit
+        # The holder the latest refusal waited behind and when its stated limit ends: (label, limitEndsAt), or None;
+        # and the holders whose late limit this wait has said already, each said once.
+        self.holder_limit, self.said_late = None, set()
         # Whether this process starts every command of the admission through processes.supervise, as qk admit, qk run
         # and the resource CLI do, so that supervision records each before it starts it: then an entry whose record
         # names no command ended before its first, and recovery checks its owner's process group instead (#315). A
@@ -1038,6 +1046,7 @@ class Admission:
         # What the settle found, for the ended line, and the reading variables it replaced, for the end to restore.
         self.settled, self.told = None, None
         if self.slots < 1 or self.maximum < self.slots or self.settle < 0 or self.poll <= 0 or timeout < 0 \
+                or (limit is not None and not (math.isfinite(limit) and limit > 0)) \
                 or self.recheck < 0 or self.hold < 0 or not math.isfinite(self.quiet_limit) or self.quiet_limit < 0 \
                 or not math.isfinite(self.quiet_seconds) or self.quiet_seconds < 0:
             raise ValueError("Invalid resource limits")
@@ -1413,6 +1422,12 @@ class Admission:
             self.refusal, self.waiting = kind, f"all {self.slots} guaranteed slots are busy and {reason}"
         return None
 
+    def _limit_ends(self):
+        """When the command's stated limit ends at the latest, as ISO 8601 text: from its admission, after the most an
+        exclusive command waits for the Mac to read quiet before it starts (_quiet), plus the limit."""
+        settle = self.quiet_seconds if self.exclusive else 0
+        return (datetime.now(timezone.utc) + timedelta(seconds=settle + self.limit)).isoformat(timespec="seconds")
+
     def _whole_host_holder(self, state):
         """The whole-host lane running on the host, if any: a live guard owner marked wholeHost."""
         return next((owner for identity, owner in state["owners"].items()
@@ -1425,6 +1440,10 @@ class Admission:
         holder = next((owner for identity, owner in state["owners"].items()
                        if owner.get("exclusive") and identity not in self.stranded), None)
         lane = self._whole_host_holder(state) if holder is None else None
+        if holder is not None or (lane is not None and not (self.exclusive or self.whole_host)):
+            blocking = holder if holder is not None else lane
+            self.holder_limit = (str(blocking.get("label") or "an unnamed owner")[:LABEL_LIMIT],
+                                 blocking.get("limitEndsAt"))
         if holder is not None:
             self.blocker = "exclusiveHolding"
             self.refusal, self.waiting = "exclusive", ("it waits behind exclusive work holding the host: "
@@ -1465,6 +1484,27 @@ class Admission:
                     os.close(fd)
         return held, unverified
 
+    def _late(self, holder, ends, started):
+        """Say at once when the exclusive or whole-host work this request waits behind states a time limit that ends
+        after this wait's deadline, ends: the work may hold the host until then, so this request may not be admitted
+        in time (vocaro/queuekeeper#255, judged as the foreground wait judges a holder's expected release, #95). The
+        wait goes on to its deadline all the same, since the work may end well before its limit; nothing shortens it.
+        Returns the words the wait's TimeoutError adds, or "" for a holder whose limit ends in time or that states
+        none."""
+        label, due = holder
+        limit_ends = lane_wait.after_deadline(due, ends)
+        if limit_ends is None: return ""
+        # A wait that outlasts the limit: from when this one began to the limit's end, and a minute more.
+        outlast = math.ceil(time.monotonic() - started + (limit_ends - datetime.now(timezone.utc)).total_seconds()) + 60
+        if holder not in self.said_late:
+            self.said_late.add(holder)
+            print(f"heavy: {label} holds the host with a time limit that ends at {due}, after this wait's deadline, "
+                  f"{ends.isoformat(timespec='seconds')}: it may hold the host until then, so this request may not be "
+                  f"admitted in time. It waits to its deadline all the same, in case that work ends early. To outlast "
+                  f"the limit, wait at least {outlast}s (`--timeout {outlast}`), or run the work on another Mac",
+                  file=sys.stderr, flush=True)
+        return f"; {label}'s time limit ends at {due}, after this wait's deadline; a wait of {outlast}s outlasts it"
+
     def _gave_up(self, waited):
         """What a request that stops waiting says stopped it: which Mac, what held it, the time waited and that nothing
         ran (#270). Work known to be running only made it wait, so this says the queue was busy and names that work. The
@@ -1489,7 +1529,7 @@ class Admission:
 
     def _attempt(self):
         self.directory.mkdir(parents=True, exist_ok=True)
-        self.blocker = None
+        self.blocker = self.holder_limit = None
         with (self.directory / "coordination.lock").open("a+") as bridge:
             fcntl.flock(bridge, fcntl.LOCK_EX)
             load = one_minute_load()
@@ -1603,6 +1643,7 @@ class Admission:
                 state["owners"][self.identity] = {"pid": os.getpid(), "start": born, "label": self.label,
                                                    "exclusive": self.exclusive, "model": self.model,
                                                    "admitted": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                                                   **({"limitEndsAt": self._limit_ends()} if self.limit else {}),
                                                    **({"wholeHost": True} if self.whole_host else {}),
                                                    **({"origin": self.origin} if self.origin else {}),
                                                    **work_place()}
@@ -1645,9 +1686,14 @@ class Admission:
         from queuekeeper.processes import Interrupted, requested
         started = self.started = time.monotonic()
         reported, said_progress, progress_at, progress_next = None, None, 0, 0
+        # The wait's deadline as a time, to judge a holder's stated limit by (late), and the holder last judged.
+        ends, judged, late = datetime.now(timezone.utc) + timedelta(seconds=self.timeout), None, ""
         try:
             while not self._attempt():
                 self._count()
+                if self.holder_limit != judged:
+                    judged = self.holder_limit
+                    late = self._late(judged, ends, started) if judged is not None else ""
                 lane_wait.waiting(lane_wait.ADMISSION, self.waiting, stranded=self.refusal == "stranded")
                 self._observe()
                 # Nothing is published yet but the request's place in the queue,
@@ -1671,7 +1717,7 @@ class Admission:
                     print(f"heavy: waiting ({waited}s): {self.waiting}", file=sys.stderr, flush=True)
                     reported = waited
                 if elapsed >= self.timeout:
-                    raise TimeoutError(self._gave_up(waited))
+                    raise TimeoutError(self._gave_up(waited) + late)
                 time.sleep(self.poll)
         except BaseException as error:
             try:
