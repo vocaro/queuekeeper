@@ -1,6 +1,7 @@
 """Inventory of the disk space Queuekeeper's own files take on a host, and removal only of what nobody owns.
 
-`qk disk` measures what Queuekeeper leaves: each repository's lane results kept by commit, and what a plugin
+`qk disk` measures what Queuekeeper leaves: each repository's lane results kept by commit, the merge queue's
+checkouts, and what a plugin
 adds (the Apple plugin: simulators and runtimes, Xcode's DerivedData, the SwiftPM cache and kept app builds).
 What sessions and the owner's workflow leave (worktrees, scratch folders, failure records, evidence archives) is
 the toolkit's `eng disk` (decision E of vocaro/vocaro-engineering#403). It classifies each item:
@@ -40,17 +41,25 @@ STATUS_ORDER = {CANDIDATE: 0, OWNER: 1, KEPT: 2}
 # The categories, in the order a report lists them and --delete removes them. A plugin adds its own (extend).
 CATEGORIES = {"kept-results": "Lane results kept by commit beside the receipts (pruned by their rule)",
               "pinned-checkouts": "Checkouts runs are pinned to, of the folders projects' plugins load from",
-              "pull-request-checkouts": "Checkouts qk pr check keeps per open pull request (removed by qk pr check)"}
+              "pull-request-checkouts": "Checkouts qk pr check keeps per open pull request (removed by qk pr check)",
+              "queue-workers": "The merge queue's checkouts, beside the main checkouts in queuekeeper-workers/"}
 # --delete removes every candidate category without asking (the owner's decision, 2026-11-05, widening that
 # of 2026-11-03 from simulators and runtimes to every candidate): a candidate is what the rules prove nobody
 # owns, so it needs no second judgment; what only the owner can judge is an owner item, never removed.
 # The categories whose every item a report lists by its path, however small.
-ALWAYS_LISTED = {"pull-request-checkouts"}
+ALWAYS_LISTED = {"pull-request-checkouts", "queue-workers"}
 SEPARATORS = re.compile(r"[\s=,;\"']+")
 DATA_VOLUME = "/System/Volumes/Data"
 # The lock reason the merge queue gives a checkout of its old layout that it could not move while a process
 # used it, once it has made the checkout afresh in its place (merge_queue.Worker.place).
 RETIRED = "retired by the merge queue"
+# How long a checkout of a project's merge queue goes unchanged before `qk disk` lists it as the owner's to judge:
+# its project is still there, so only the owner can say whether the room is worth a cold rebuild (queue_workers).
+# StudyWright's newer-half checkout held 2.5 GiB unchanged for 12 days on 2026-11-27 (vocaro/queuekeeper#407).
+WORKER_IDLE = 7 * 86400
+# What git ls-remote prints when the repository a remote names no longer exists, as against a dropped connection
+# or a refused key, which prove nothing (remote_gone).
+GONE_REMOTE = re.compile(r"repository not found|repository '[^']*' not found|could not be found|does not exist", re.I)
 
 
 @dataclass
@@ -553,6 +562,124 @@ def pull_request_checkouts(host, usage, sizes):
     return items
 
 
+def gitdir_of(checkout):
+    """The Git directory a linked checkout's .git file names, or None when it has none."""
+    try: text = (Path(checkout) / ".git").read_text()
+    except OSError: return None
+    if not text.startswith("gitdir:"): return None
+    gitdir = Path(text.split(":", 1)[1].strip())
+    return gitdir if gitdir.is_absolute() else Path(checkout) / gitdir
+
+
+def common_of(gitdir):
+    """The common Git directory of a linked checkout's Git directory, which its commondir file names."""
+    try: named = Path((gitdir / "commondir").read_text().strip())
+    except OSError: return Path(os.path.normpath(gitdir.parent.parent))
+    return Path(os.path.normpath(named if named.is_absolute() else gitdir / named))
+
+
+def waiting_entries(main):
+    """The IDs of the entries in main's merge queue that still wait: queued, testing or passed."""
+    from . import merge_queue  # which imports this module
+    found = []
+    for path in sorted((main / ".git/queuekeeper-queue/entries").glob("*.json")):
+        try: state = json.loads(path.read_text()).get("state")
+        except (OSError, ValueError, AttributeError): state = merge_queue.QUEUED  # unreadable: count it as waiting
+        if state in merge_queue.WAITING: found.append(path.stem)
+    return found
+
+
+def remote_gone(run, main):
+    """The words saying that main's origin names a repository that no longer exists, or None: when main has no origin,
+    the remote answers, or the failure says nothing of the repository, such as a dropped connection or a refused
+    key."""
+    try:
+        url = git(run, main, "remote", "get-url", "origin", timeout=30)
+        if url.returncode != 0 or not url.stdout.strip(): return None
+        listed = run(["git", "ls-remote", "--", url.stdout.strip(), "HEAD"], capture_output=True, text=True, timeout=60,
+                     env={**git_environment(), "GIT_TERMINAL_PROMPT": "0"})
+    except (OSError, subprocess.SubprocessError): return None
+    if listed.returncode == 0 or not GONE_REMOTE.search(listed.stderr or ""): return None
+    return f"its origin, {url.stdout.strip()}, says the repository is not found"
+
+
+def queue_workers(host, usage, sizes):
+    """The merge queue's checkouts of each project, DEVELOPMENT/queuekeeper-workers/NAME/ (merge_queue.Queue.home):
+    the worker's checkout, the toolkit's copy and those beside them for a bisect's newer half, a stacked gate or a
+    docs round. The queue locks each (merge_queue.CHECKOUT_REASON), so no sweep took them, and on 2026-11-27 the
+    workers of four projects whose repositories were deleted stayed (vocaro/queuekeeper#407).
+
+    A project's whole folder is a candidate when its repository is gone, no process uses the folder and it is idle:
+    no checkout under DEVELOPMENT names the project and its own checkout's Git directory is gone, so no queue entry
+    can wait in it, or its main checkout's origin says the repository is not found and no entry waits there. A
+    project that is still there keeps its checkouts; each unchanged for WORKER_IDLE is the owner's item, with what
+    removing it costs, since only the owner can weigh the room against the next cold build."""
+    from . import merge_queue  # which imports this module
+    root = host.development / merge_queue.QUEUES
+    if not root.is_dir(): return []
+    items = []
+    for home in sorted(path for path in root.iterdir() if path.is_dir() and not path.is_symlink()):
+        name, main = home.name, host.development / home.name
+        children = sorted(path for path in home.iterdir() if path.is_dir() and not path.is_symlink())
+        idle = host.now - max([last_activity(home), *map(last_activity, children)])
+        use = usage.of(home)
+        present = (main / ".git").is_dir()
+        own = gitdir_of(home / name)
+        gone = None
+        if not present and not (own and own.exists()):
+            gone = (f"no checkout under {host.development} names {name}, and its checkout's Git directory is gone, "
+                    "so no queue entry can wait for it")
+        elif present and not use and idle >= window(host, host.min_idle) and not waiting_entries(main):
+            # Asked once a host, as loosen lists the inventory again at each limit it tries.
+            remotes = host.__dict__.setdefault("gone_remotes", {})
+            if main not in remotes: remotes[main] = remote_gone(host.run, main)
+            gone = remotes[main]
+            if gone: gone += ", and no entry waits in its queue"
+        if gone:
+            words = f"{name}'s merge queue checkouts, whose repository is gone: {gone}"
+            if use:
+                items.append(Item("queue-workers", str(home), KEPT, f"{words}; in use: {described(use)}",
+                                  sizes.of(home), None, idle))
+            elif idle < window(host, host.min_idle):
+                items.append(Item("queue-workers", str(home), KEPT, f"{words}; but changed {age(idle)} ago",
+                                  sizes.of(home), None, idle))
+            else:
+                items.append(Item("queue-workers", str(home), CANDIDATE, f"{words}; no process; idle {age(idle)}; "
+                                  "`qk queue reclaim` in the toolkit then forgets its copy's registration",
+                                  sizes.of(home), ["rm", "-rf", "--", str(home)], idle))
+            continue
+        for child in children:
+            items.append(worker_checkout(host, usage, sizes, name, child))
+    return items
+
+
+def worker_role(name, child):
+    """What the merge queue of project name uses its checkout child for, and so when it makes it again."""
+    from . import merge_queue  # which imports this module
+    roles = {name: "every gate", f"{name}{merge_queue.BESIDE_SUFFIX}": "a bisect's newer half or a stacked gate",
+             f"{name}{merge_queue.DOCS_SUFFIX}": "a docs round beside a code gate",
+             f"{name}{merge_queue.ISOLATION_STACK_SUFFIX}": "an isolation stack's probes"}
+    return roles.get(child.name, "its rounds, as the copy of the toolkit they run")
+
+
+def worker_checkout(host, usage, sizes, name, child):
+    """One checkout of a project's merge queue that is still there: kept while it is used or changed within
+    WORKER_IDLE, else the owner's item, with the command that removes it and its registration."""
+    idle = host.now - last_activity(child)
+    use = usage.of(child)
+    words = f"{name}'s merge queue checkout for {worker_role(name, child)}"
+    if use: return Item("queue-workers", str(child), KEPT, f"{words}; in use: {described(use)}", sizes.of(child), None, idle)
+    if idle < WORKER_IDLE:
+        return Item("queue-workers", str(child), KEPT, f"{words}; changed {age(idle)} ago", sizes.of(child), None, idle)
+    gitdir = gitdir_of(child)
+    command = None if gitdir is None else ["git", "--git-dir", str(common_of(gitdir)), "worktree", "remove", "--force",
+                                           "--force", str(child)]
+    size = sizes.of(child)
+    return Item("queue-workers", str(child), OWNER, f"{words}; unchanged for {age(idle)}, no process; removing it frees "
+                f"{human(size)} and costs {name}'s queue a fresh worktree and a cold build the next time it needs this "
+                "checkout, which it makes again by itself", size, command, idle)
+
+
 def orphaned_pin(checkout):
     """Whether offload_host.stale_pins listed checkout only for its ready file, its commit's folder being gone."""
     return not checkout.parent.exists() and not checkout.parent.is_symlink()
@@ -607,6 +734,9 @@ def inventory(host, sizes, categories=None):
     if "pull-request-checkouts" in wanted:
         sizes.begin("pull-request-checkouts")
         items += pull_request_checkouts(host, usage, sizes)
+    if "queue-workers" in wanted:
+        sizes.begin("queue-workers")
+        items += queue_workers(host, usage, sizes)
     for listed in PLUGIN_ITEMS:
         named = [category for category in PLUGIN_CATEGORIES.get(listed, ()) if category in wanted]
         if named: sizes.begin(", ".join(named))
