@@ -4,8 +4,8 @@ Everything you need to set up Queuekeeper, land changes through it, and follow w
 The [README](../README.md) explains what Queuekeeper is for. The [developer guide](developer_guide.md)
 covers how it works inside and how to change it.
 
-- [Set up](#set-up): requirements, install, configure a project, pull requests or the merge queue,
-  tell your agents, add Macs
+- [Set up](#set-up): for an agent doing the setup, requirements, install, configure a project,
+  pull requests or the merge queue, tell your agents, add Macs
 - [Land changes](#land-changes): what the merge queue does with a commit
 - [Lanes and admission](#lanes-and-admission): the commands Queuekeeper runs, and when a Mac has room
 - [The build farm](#the-build-farm): running work on more than one Mac
@@ -18,6 +18,70 @@ covers how it works inside and how to change it.
 
 ## Set up
 
+### If an agent sets this up
+
+What an agent setting Queuekeeper up in a project needs to know first, for an owner who may never
+have used it. None of it is a step to follow in order; it is what to weigh before choosing for the
+owner, and when the choice is the owner's to make.
+
+**Find out how the project's changes reach `main` now.** Queuekeeper can work three ways, and the
+right one depends on that:
+
+- the repository's rules: `gh api repos/OWNER/REPO/rulesets` and
+  `gh api repos/OWNER/REPO/branches/main/protection` show whether `main` requires pull requests,
+  reviews or checks. A 404 means none. A private repository on GitHub's free plan has neither,
+  so a requirement there lives in the project's instructions instead;
+- the project's own instructions, such as `AGENTS.md`, `CLAUDE.md` or `CONTRIBUTING.md`, and
+  anything the owner has said about who may change `main` or who merges;
+- `main`'s history: `git log --oneline -20 origin/main` shows whether changes arrive as merges of
+  pull requests or as direct commits;
+- whether checks run on its pull requests in a CI service.
+
+**The three ways**, set by `integration` in `queuekeeper.json`
+([Pull requests or the merge queue](#pull-requests-or-the-merge-queue) has the detail):
+
+| `integration` | How changes reach `main` | What it needs | What it changes for the project |
+|---|---|---|---|
+| `"direct-main"`, the default | Agents run `qk land`; the merge queue tests and pushes | A `gate` lane; a `main` Queuekeeper may push to, with no rule requiring pull requests | No pull requests and no review before a change lands |
+| `"pull-request"` | Pull requests, merged as now | `gh` signed in, for `qk pr check` | Nothing about merging; builds and tests take admission, and `qk pr check` can be a required check |
+| `"pull-request-queue"` | Pull requests a person labels; the merge queue tests and merges them | A `gate` lane; `gh` signed in; where `main` requires pull requests, a ruleset bypass for the account the queue pushes with | A person labels instead of merging; the queue merges |
+
+Every way keeps the rest of Queuekeeper: admission, the build farm, simulators and devices, and
+the dashboard.
+
+**When the choice is the owner's.** Which one is a decision about who may change `main`, so it is
+the owner's whenever the signs above point away from the default:
+
+- The project requires pull requests or review, by a rule or an instruction, or its `main` is
+  made of pull request merges: `"direct-main"` would remove that review. Lay out the three, and
+  say which you recommend: `"pull-request"` changes nothing about how the project merges, and
+  `"pull-request-queue"` keeps review and adds the queue's testing of each change with what lands
+  ahead of it.
+- Other people work in the repository, and the owner has not said how they want changes landed.
+- The owner has asked for the merge queue, or the project is theirs alone, takes direct commits
+  on `main` and requires no pull requests: `"direct-main"` fits, with no question needed. Say
+  which you chose and why.
+
+Never turn off a rule that requires pull requests, or rewrite the project's instructions about
+merging, to make `"direct-main"` work, unless the owner says to.
+
+**What setup changes in the session doing it.**
+
+- `qk agents setup --guard` writes `.claude/settings.json`, and Claude Code reads it at once, so
+  the guard applies to the session running setup from then on. It refuses pushing to `main` in
+  every mode, `gh pr merge` in the pull-request modes, and adding the queue's label in
+  `"pull-request-queue"`. A pull request that carries the setup itself is then merged by a person.
+- The rule setup writes into `AGENTS.md`, or `CLAUDE.md`, sits between two marker lines, so it
+  stays apart from the project's own text; `qk agents remove` takes it out. Where those files come
+  from a template, a template update may need the block kept by hand.
+- Queuekeeper sets `core.hooksPath` only when `queuekeeper.json`'s `gitHooks` names a folder.
+  Without it, `qk doctor` leaves the setting alone, but rewrites an absolute path as a relative
+  one so that each worktree runs its own hooks. A hooks manager that installs into
+  `.git/hooks`, such as lefthook, is untouched.
+
+**Landing the setup itself** differs by mode ([Land a first change](#land-a-first-change)), and
+`qk doctor` then reports the `integration` it read from the checkout.
+
 ### Requirements
 
 - **macOS.** Queuekeeper reads macOS's load, memory-pressure and screen-lock state. It has not
@@ -26,11 +90,10 @@ covers how it works inside and how to change it.
   so install a current one, for example with Homebrew.
 - **Git**, and a repository that:
   - has a remote named `origin` you can push to without a prompt, and
-  - lets Queuekeeper push to `main`, for its merge queue. A project that integrates through pull
-    requests instead uses the rest of Queuekeeper without the queue
-    ([Pull requests or the merge queue](#pull-requests-or-the-merge-queue)).
+  - lets Queuekeeper push to `main`, for its merge queue, unless the project keeps merging pull
+    requests itself ([Pull requests or the merge queue](#pull-requests-or-the-merge-queue)).
 - **A command that tests the project** and exits nonzero when it fails. This becomes the gate,
-  which a project that integrates through pull requests may leave out.
+  which a `"pull-request"` project may leave out.
 
 The Apple plugin has [requirements of its own](../plugins/apple/src/queuekeeper_apple/README.md#requirements).
 
@@ -352,10 +415,15 @@ through `tail` or `head`, and trim when reading it; `qk progress` says how far a
 
 ### Land a first change
 
-Have your agent commit the configuration and agent instructions on its branch, run
-`qk land --wait`, follow the entry to its result, and confirm the setup reached `origin/main`.
-This works in a repository created empty too, with no `main` yet: that landing creates `main`
-([A project's first landing](#a-projects-first-landing)).
+Have your agent commit the configuration and agent instructions on its branch, then:
+
+- **`"direct-main"`:** run `qk land --wait`, follow the entry to its result, and confirm the setup
+  reached `origin/main`. This works in a repository created empty too, with no `main` yet: that
+  landing creates `main` ([A project's first landing](#a-projects-first-landing)).
+- **`"pull-request"` or `"pull-request-queue"`:** push the branch and open a pull request, which a
+  person merges as the project merges any. The mode is read from `main`'s `queuekeeper.json`, so
+  the queue takes labeled pull requests, and the launcher's look checks pull requests, only once
+  the setup is on `main`.
 
 ### Add another Mac
 

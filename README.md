@@ -41,7 +41,9 @@ queues, including other local queues for AI agents, and says where they are the 
 Queuekeeper needs macOS, Python 3.14 or newer and Git. Each project needs an `origin` remote it can
 push to without a prompt. Start with one Mac and [add more](doc/user_guide.md#add-another-mac)
 later if builds need it. You can do each step below yourself, following the
-[user guide](doc/user_guide.md#set-up), or ask an agent to do it.
+[user guide](doc/user_guide.md#set-up), or ask an agent to do it. An agent setting it up starts
+with [If an agent sets this up](doc/user_guide.md#if-an-agent-sets-this-up), which says how to
+tell whether the project should keep its pull requests.
 
 1. **Install once per Mac.** Clone this repository into `~/Development/queuekeeper`, check out the
    [latest release](https://github.com/vocaro/queuekeeper/releases/latest)'s tag and run
@@ -49,9 +51,10 @@ later if builds need it. You can do each step below yourself, following the
    project's merge queue run that release until you check out another
    ([details](doc/user_guide.md#install)).
 2. **Configure each project.** Add a `queuekeeper.json` whose gate runs the project's checks, enable
-   the [plugins](#plugins) it needs, and resolve what `qk doctor` reports. A project that merges
-   through pull requests instead of the merge queue also sets `"integration": "pull-request"`
-   ([details](doc/user_guide.md#pull-requests-or-the-merge-queue)). Each project keeps its own
+   the [plugins](#plugins) it needs, and resolve what `qk doctor` reports. A project that keeps
+   pull requests sets `"integration": "pull-request"`, or `"pull-request-queue"` to have the merge
+   queue land them ([details](doc/user_guide.md#pull-requests-or-the-merge-queue)).
+   Each project keeps its own
    gate and queue while sharing the Mac's capacity.
 3. **Teach your agents.** Run `qk agents setup --guard` in each project. It writes the
    [agent instructions](doc/user_guide.md#tell-your-agents) into `AGENTS.md` or `CLAUDE.md`, so agents
