@@ -3029,24 +3029,30 @@ class NoVerdict(Fixture):
         source.write_text(json.dumps({**evidence, "dispatched": began - 1}))
         self.assertFalse(read())
 
-    def test_a_confirmed_remote_build_cache_fault_retries_here_and_still_counts(self):
-        self.commit("a", "a")
-        [identifier] = self.add("a")
+    def remote_faults(self, faulting, **evidence):
+        """A remote.dispatch for gates that ran on fixture-remote while faulting(gates so far) says so, each
+        returning an exact terminal receipt for its build-cache fault with evidence, and ran here after."""
         dispatch = self.base / "remote-gate"
-        dispatch.mkdir()
+        dispatch.mkdir(exist_ok=True)
 
         def remote_dispatch(root, lane, began):
-            if lane != "gate" or self.gates() != 1: return None, None
+            if lane != "gate" or not faulting(self.gates()): return None, None
             head = run(root, "git", "rev-parse", "HEAD")
-            (dispatch / "source.json").write_text(json.dumps(self.remote_build_cache_fault(head, began)))
+            (dispatch / "source.json").write_text(json.dumps(self.remote_build_cache_fault(head, began, **evidence)))
             return dispatch, "fixture-remote"
+        return remote_dispatch
 
+    def test_a_confirmed_remote_build_cache_fault_retries_here_and_is_not_counted(self):
+        """The owner's decision of 2026-11-27 (#68): a verified host fault of the other Mac leaves
+        queue.noVerdictRuns where it was, as a locked screen does."""
+        self.commit("a", "a")
+        [identifier] = self.add("a")
         settled = []
         def settle(worker, _what, *, macs):
             settled.append(macs()[0])
 
         with self.no_verdict_for(1), self.commands() as commands, \
-                patch.object(mq.remote, "dispatch", side_effect=remote_dispatch), \
+                patch.object(mq.remote, "dispatch", side_effect=self.remote_faults(lambda gates: gates == 1)), \
                 patch.object(mq.remote, "here_unfit", return_value=None), \
                 patch.object(mq.Worker, "settle", settle), contextlib.redirect_stdout(io.StringIO()) as said:
             self.assertEqual(self.work(), 0)
@@ -3054,7 +3060,48 @@ class NoVerdict(Fixture):
         self.assertEqual(settled, [[None]])
         self.assertEqual(self.lane_runs(commands), [["python3", "scripts/qk", "run", "gate"],
                                                   ["python3", "scripts/qk", "run", "--here", "gate"]])
+        self.assertRegex(said.getvalue(), r"no verdict: gate gave no verdict \(exit 3\) on \S.* for a verified host "
+                         r"build-cache fault of that Mac, which queue\.noVerdictRuns does not count \(still 0 of at "
+                         rf"most {mq.NO_VERDICT_RUNS}\); 1 such run of this batch, and {mq.HOST_FAULT_RUNS} send it "
+                         r"back; its next attempt goes only to this Mac")
+        self.assertNotIn("run 1 of at most", said.getvalue())
+
+    def test_an_unattributed_remote_no_verdict_still_counts(self):
+        """The negative control: a remote receipt with no recognized host cause counts, and keeps its placement."""
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.no_verdict_for(1), self.commands() as commands, \
+                patch.object(mq.remote, "dispatch",
+                             side_effect=self.remote_faults(lambda gates: gates == 1, hostFaultKind=None)), \
+                patch.object(mq.remote, "here_unfit", return_value=None), \
+                patch.object(mq.Worker, "settle", lambda *_, **__: None), \
+                contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(self.lane_runs(commands), [["python3", "scripts/qk", "run", "gate"]] * 2)
         self.assertIn(f"run 1 of at most {mq.NO_VERDICT_RUNS}", said.getvalue())
+        self.assertNotIn("does not count", said.getvalue())
+
+    def test_a_mac_that_faults_on_every_run_sends_the_batch_back_at_host_fault_runs(self):
+        """The bound on uncounted runs: with this Mac unfit for the lane, each retry goes back to the faulting Mac,
+        past queue.noVerdictRuns, until HOST_FAULT_RUNS send the batch back as the host's."""
+        self.assertGreater(mq.HOST_FAULT_RUNS, mq.NO_VERDICT_RUNS)
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.no_verdict_for(99), \
+                patch.object(mq.remote, "dispatch", side_effect=self.remote_faults(lambda gates: True)), \
+                patch.object(mq.remote, "here_unfit", return_value="the fixture keeps the lane off this Mac"), \
+                patch.object(mq.Worker, "settle", lambda *_, **__: None), \
+                contextlib.redirect_stdout(io.StringIO()) as said:
+            self.work()
+        self.assertEqual(self.gates(), mq.HOST_FAULT_RUNS, said.getvalue())
+        entry = self.state(identifier)
+        self.assertEqual(entry["state"], "failed", said.getvalue())
+        self.assertTrue(entry["noVerdict"])
+        self.assertEqual(entry["failureKind"], "host")
+        self.assertIn(f"in {mq.HOST_FAULT_RUNS} runs of this batch, the most HOST_FAULT_RUNS allows "
+                      f"({mq.HOST_FAULT_RUNS})", entry["why"])
+        self.assertIn("its next attempt is placed as usual", said.getvalue())
 
     def test_a_no_verdict_send_back_quotes_the_error_its_own_receipt_records(self):
         """A lane that reached its own limit: the real qk run, its real receipt, and a log that just stops (#288)."""

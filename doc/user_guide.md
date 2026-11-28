@@ -946,6 +946,12 @@ take exclusive admission for the measurement. See [Choosing the request](#choosi
   visible. A crash message without its report, or beside any other failure, stays a failure.
 - **A screen that locked during the run** has a separate count. The lane next runs only on an
   unlocked Mac. Five runs in a row that start unlocked and end locked send back the batch.
+- **A verified fault of the other Mac** has a separate count too. When the exact remote run's receipt
+  attributes its unmeasured result to that Mac's build cache, the run does not count toward
+  `noVerdictRuns`, and the lane next runs on this Mac if its settings allow. The worker log says
+  `which queue.noVerdictRuns does not count` and how many such runs the batch has had. Five such runs
+  of one batch send it back as the host's. A no-verdict run whose cause is not attributed to the host
+  still counts.
 - **A lane whose command could not start** (exit 127), and **a lane Queuekeeper itself could not
   start** in (exit 70, a plugin that did not load), hold the queue at once, since a
   rerun would fail the same way. If the batch's own commits break loading, that entry is found by
