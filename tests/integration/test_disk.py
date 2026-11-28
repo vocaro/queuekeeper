@@ -290,6 +290,141 @@ class PullRequestCheckoutTests(Fixture):
         self.assertIn("in use", self.items(self.host(processes), ["pull-request-checkouts"])[str(folder / "12")].reason)
 
 
+class QueueWorkerTests(Fixture):
+    """The merge queue's checkouts beside the main checkouts: a gone project's reclaimed, a live project's idle ones
+    the owner's (vocaro/queuekeeper#407)."""
+    def setUp(self):
+        super().setUp()
+        self.workers = self.development / "queuekeeper-workers"
+        self.project_home = self.workers / "Project"
+        self.checkout = self.worktree("Project", parent=self.project_home)
+        self.beside = self.worktree("Project-beside", parent=self.project_home)
+        self.ledger = self.root / "ledger.jsonl"
+
+    def gone(self, name="Gone"):
+        """A worker folder whose project's main checkout, and with it its Git directory, was deleted."""
+        home = self.workers / name
+        for child in (name, "queuekeeper"):
+            (home / child).mkdir(parents=True)
+            (home / child / ".git").write_text(f"gitdir: {self.development / name}/.git/worktrees/{child}\n")
+            (home / child / "build.log").write_text("built\n")
+        return home
+
+    def remote(self, stderr, code=128):
+        """A run that answers git ls-remote as stderr says, and runs everything else; calls lists each ls-remote."""
+        calls = []
+        def run(command, **options):
+            if command[:2] == ["git", "ls-remote"]:
+                calls.append(command)
+                return subprocess.CompletedProcess(command, code, "", stderr)
+            return subprocess.run(command, **options)
+        git(self.main, "remote", "add", "origin", "git@github.com:vocaro/Project.git")
+        return run, calls
+
+    def workers_of(self, host):
+        return self.items(host, ["queue-workers"])
+
+    def test_a_live_projects_checkouts_are_kept_while_recent_and_the_owners_once_idle(self):
+        recent = self.workers_of(self.host(now=time.time()))
+        self.assertEqual(set(recent), {str(self.checkout), str(self.beside)})
+        self.assertTrue(all(item.status == disk.KEPT for item in recent.values()))
+        self.assertIn("Project's merge queue checkout for every gate; changed", recent[str(self.checkout)].reason)
+        idle = self.workers_of(self.host())[str(self.beside)]
+        self.assertEqual(idle.status, disk.OWNER)
+        self.assertIn("a bisect's newer half or a stacked gate; unchanged for", idle.reason)
+        self.assertIn("costs Project's queue a fresh worktree and a cold build", idle.reason)
+        self.assertEqual(idle.command[-5:], ["worktree", "remove", "--force", "--force", str(self.beside)])
+        self.assertEqual(idle.command[2], str(self.main / ".git"))
+        used = self.workers_of(self.host([disk.Process(41, "swift-build", cwd=str(self.beside))]))[str(self.beside)]
+        self.assertEqual(used.status, disk.KEPT)
+        self.assertIn("in use: PID 41", used.reason)
+        # An owner item's command never runs, so --delete leaves it.
+        with contextlib.redirect_stdout(StringIO()):
+            disk.delete(list(self.workers_of(self.host()).values()),
+                        lambda category: list(self.workers_of(self.host()).values()), self.ledger)
+        self.assertTrue(self.beside.exists())
+
+    def test_a_gone_projects_folder_is_a_candidate_and_delete_removes_it(self):
+        home = self.gone()
+        item = self.workers_of(self.host())[str(home)]
+        self.assertEqual(item.status, disk.CANDIDATE)
+        self.assertIn("no checkout under", item.reason)
+        self.assertIn("its checkout's Git directory is gone", item.reason)
+        self.assertEqual(item.command, ["rm", "-rf", "--", str(home)])
+        self.assertNotIn(str(home / "Gone"), self.workers_of(self.host()))  # one item for the whole folder
+        with contextlib.redirect_stdout(StringIO()):
+            removed = disk.delete([item], lambda category: list(self.workers_of(self.host()).values()), self.ledger)
+        self.assertEqual(removed, 1)
+        self.assertFalse(home.exists())
+        self.assertTrue(self.checkout.exists() and self.beside.exists())
+
+    def test_a_gone_projects_folder_is_kept_while_used_or_recent_and_checked_again(self):
+        home = self.gone()
+        used = self.workers_of(self.host([disk.Process(42, "python3", cwd=str(home / "queuekeeper"))]))[str(home)]
+        self.assertEqual((used.status, used.command), (disk.KEPT, None))
+        self.assertIn("in use: PID 42", used.reason)
+        recent = self.workers_of(self.host(now=time.time()))[str(home)]
+        self.assertEqual(recent.status, disk.KEPT)
+        self.assertIn("but changed", recent.reason)
+        item = self.workers_of(self.host())[str(home)]
+        later = [disk.Process(43, "swift-build", cwd=str(home / "Gone"))]
+        with contextlib.redirect_stdout(StringIO()):
+            disk.delete([item], lambda category: list(self.workers_of(self.host(later)).values()), self.ledger)
+        self.assertTrue(home.exists())
+        self.assertIn("skipped: ", self.ledger.read_text())
+        self.assertIn("in use: PID 43", self.ledger.read_text())
+
+    def test_a_worker_whose_checkout_names_a_living_repository_is_not_gone(self):
+        # No main checkout of that name, but the worker's own Git directory is there: the project only moved.
+        moved = self.workers / "Moved"
+        self.worktree("Moved", parent=moved)
+        items = self.workers_of(self.host())
+        self.assertNotIn(str(moved), items)
+        self.assertEqual(items[str(moved / "Moved")].status, disk.OWNER)
+
+    def test_a_project_whose_origin_is_not_found_is_a_candidate(self):
+        run, calls = self.remote("ERROR: Repository not found.\nfatal: Could not read from remote repository.\n")
+        item = self.workers_of(self.host(run=run))[str(self.project_home)]
+        self.assertEqual(item.status, disk.CANDIDATE)
+        self.assertIn("its origin, git@github.com:vocaro/Project.git, says the repository is not found", item.reason)
+        self.assertIn("no entry waits in its queue", item.reason)
+        self.assertEqual(len(calls), 1)
+
+    def test_an_unanswered_origin_proves_nothing(self):
+        for stderr, code in (("ssh: Could not resolve hostname github.com\n", 128),
+                             ("git@github.com: Permission denied (publickey).\n", 128), ("", 0)):
+            git(self.main, "remote", "remove", "origin") if "origin" in git(self.main, "remote") else None
+            run, calls = self.remote(stderr, code)
+            items = self.workers_of(self.host(run=run))
+            self.assertNotIn(str(self.project_home), items, stderr)
+            self.assertEqual(items[str(self.beside)].status, disk.OWNER)
+            self.assertEqual(len(calls), 1)
+
+    def test_no_origin_a_waiting_entry_a_process_or_recent_work_keeps_a_project_without_asking_its_remote(self):
+        def calls_with(*extra, **values):
+            run, calls = self.remote("ERROR: Repository not found.\n")
+            items = self.workers_of(self.host(*extra, run=run, **values))
+            git(self.main, "remote", "remove", "origin")
+            return items, calls
+        entries = self.main / ".git/queuekeeper-queue/entries"
+        entries.mkdir(parents=True)
+        (entries / "qk1.json").write_text(json.dumps({"state": "landed"}))
+        (entries / "qk2.json").write_text(json.dumps({"state": "queued"}))
+        for items, calls in (calls_with(), calls_with([disk.Process(44, "python3", cwd=str(self.checkout))]),
+                             calls_with(now=time.time())):
+            self.assertNotIn(str(self.project_home), items)
+            self.assertEqual(calls, [])
+        (entries / "qk2.json").write_text(json.dumps({"state": "landed"}))
+        items, calls = calls_with()
+        self.assertEqual(items[str(self.project_home)].status, disk.CANDIDATE)
+        # Without an origin, a project that only lives here is never gone.
+        none = []
+        run = lambda command, **options: none.append(command) if command[:2] == ["git", "ls-remote"] \
+            else subprocess.run(command, **options)
+        self.assertNotIn(str(self.project_home), self.workers_of(self.host(run=run)))
+        self.assertEqual(none, [])
+
+
 class ProgressTests(Extended):
     """vocaro/queuekeeper#212: a run says on stderr which pass it is in and how far it has got, at most one line
     each interval besides the forced ones, and its stdout reaches a file line by line."""
