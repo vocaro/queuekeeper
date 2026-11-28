@@ -143,6 +143,12 @@ To follow unreleased changes instead, as Queuekeeper's own development does, kee
 `main` and update with `git pull --ff-only`: each queue then moves to Queuekeeper's `origin/main`
 every round.
 
+While the checkout is at a release tag, `qk doctor` asks the remote for its release tags with
+`git ls-remote --tags`, bounded to 10 seconds, and when a newer release is out it says so among its
+`notes`, not its warnings, with the two commands that update the checkout to it. A remote that can't
+be reached, or doesn't answer in time, leaves out the note and fails nothing. A checkout on `main`
+asks nothing: `git pull --ff-only` already brings it every release.
+
 `python3 tools/install-checkout.py --check` says whether everything is in place, and `--remove`
 takes it out again.
 
@@ -169,6 +175,7 @@ configuration names one lane, `gate`, the command every change must pass:
 | `name` | The project's name |
 | `plugins` | The [plugins](../README.md#plugins) to load. `[]`, or leaving it out, loads the core alone. Its name was `extensions` until vocaro/queuekeeper#48: a file that still says `extensions` loads no plugin, so a plugin's command, such as `qk simulator-pool`, is an invalid choice, and qk says to rename the key |
 | `disk` | `{"startFreeGB": N}`, the free space a lane that fills the disk waits for ([Free disk space](#free-disk-space)) |
+| `queuekeeper` | `{"minimum": "X.Y.Z"}`, the oldest Queuekeeper release the project needs ([The release a project needs](#the-release-a-project-needs)) |
 | `command` | An argument list, not a shell string |
 | `timeout` | Seconds. A lane that reaches it ends as *unmeasured*, not failed |
 
@@ -198,6 +205,35 @@ Defaults to know about:
   ([Gate lanes chosen by changed paths](#gate-lanes-chosen-by-changed-paths)).
 
 [Lanes and admission](#lanes-and-admission) describes the other lane settings.
+
+#### The release a project needs
+
+A project that relies on something a Queuekeeper release added can say which release that is:
+
+```json queuekeeper.json
+{
+  "schemaVersion": 1,
+  "name": "my-project",
+  "plugins": [],
+  "queuekeeper": {"minimum": "1.2.0"},
+  "lanes": {
+    "gate": {"command": ["scripts/test.sh"], "timeout": 1800}
+  }
+}
+```
+
+It is a floor, not a pin. Every project on a Mac runs that Mac's one Queuekeeper checkout, so a
+project can't choose its own release, only say which it can't run without. When the Queuekeeper
+that runs is older, each `qk` command that reads the project's `queuekeeper.json` says so on
+standard error, naming the two releases and the update: `git fetch --tags` in Queuekeeper's
+checkout, then a checkout of that release's tag or a newer one ([Install](#install)). `qk doctor`
+gives it as a warning instead. Nothing refuses to run: the commands go on with the older release.
+
+Queuekeeper compares the minimum with the version in its checkout's `pyproject.toml`, which
+`qk --version` prints and each release's commit sets. A checkout at a release tag is that release.
+A checkout on `main` is the newest release `main` holds, so it meets every minimum that names a
+release already out, and falls short of one that names a release still to come. A version Queuekeeper
+can't read meets any minimum.
 
 ### Pull requests or the merge queue
 

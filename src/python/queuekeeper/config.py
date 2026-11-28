@@ -259,7 +259,7 @@ def parse(source):
     if not isinstance(value, dict) or value.get("schemaVersion") != 1:
         raise ValueError("queuekeeper.json requires schemaVersion 1")
     allowed = {"schemaVersion", "name", "plugins", "lanes", "integration", "pullRequests", "repository",
-               "queue", "release", "testLanes", "gitHooks", "docs", "siblings", "disk"}
+               "queue", "release", "testLanes", "gitHooks", "docs", "siblings", "disk", "queuekeeper"}
     if "spelling" in value: raise ValueError(f"spelling {SPELLING_GONE}")
     if "extensions" in value: raise ValueError(EXTENSIONS_RENAMED)
     if set(value) - allowed - set(PLUGIN_CONFIG_KEYS):
@@ -335,7 +335,38 @@ def parse(source):
     release(value.get("release", {}), lanes, value.get("queue", {}))
     test_lanes(value.get("testLanes", {}))
     documentation(value.get("docs", {}))
+    queuekeeper_settings(value.get("queuekeeper", {}))
     return value
+
+
+# A Queuekeeper version, as a release's tag names it without its v (tools/release.py).
+RELEASE_VERSION = re.compile(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)")
+
+
+def queuekeeper_settings(declared):
+    """queuekeeper, what the project needs of the Queuekeeper that runs it: minimum, the oldest release, such as
+    "1.2.0", whose behavior it relies on (vocaro/queuekeeper#351). It is a floor, not a pin: every project on a Mac
+    runs the one Queuekeeper checkout there, so a project cannot choose its own."""
+    if not isinstance(declared, dict) or set(declared) - {"minimum"}:
+        raise ValueError("queuekeeper supports only minimum")
+    minimum = declared.get("minimum", "0.0.0")
+    if not (isinstance(minimum, str) and RELEASE_VERSION.fullmatch(minimum)):
+        raise ValueError("queuekeeper.minimum must be a release's version of the form X.Y.Z, such as 1.2.0")
+
+
+def release_shortfall(config, running, toolkit=TOOLKIT_ROOT):
+    """What to say when the project's queuekeeper.minimum is newer than running, the version of the Queuekeeper this
+    process loaded, with how to update it; otherwise None. running is the version its pyproject.toml states, which a
+    release's commit sets: at a release tag that release, and on main the newest release main holds. A version that
+    cannot be read, "unknown", meets any minimum, as nothing says it falls short."""
+    minimum = config.get("queuekeeper", {}).get("minimum")
+    if minimum is None or not RELEASE_VERSION.fullmatch(running or ""): return None
+    numbers = lambda version: tuple(map(int, version.split(".")))
+    if numbers(running) >= numbers(minimum): return None
+    return (f"{config.get('name', 'this project')}'s {FILE} asks for Queuekeeper {minimum} or newer (queuekeeper."
+            f"minimum), and the Queuekeeper at {toolkit} is {running}: update it with `git -C {toolkit} fetch --tags` "
+            f"and then `git -C {toolkit} checkout v{minimum}`, or a newer release's tag. That checkout serves every "
+            "project on this Mac")
 
 
 def documentation(docs):
