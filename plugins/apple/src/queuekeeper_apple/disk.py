@@ -247,10 +247,13 @@ def simulators(host, usage, sizes):
                 allowed, why = simulator_pool.template_prunable(
                     template, kind, simulator_pool.entries_for(template, entries), now, kind_after)
                 gone = "unavailable, its runtime gone" if not device.get("isAvailable", True) else why
-                items.append(item(CANDIDATE, f"the {pool} pool's warmed template of its kind, {gone}; the next new "
-                                             "member of the kind warms another", prune_command(pool, udid, kind_after))
+                # A template whose warm-up failed stays until a take remakes it, and says so (vocaro/queuekeeper#203).
+                failed = simulator_pool.out_of_use(entries["devices"].get(template.name))
+                failed = f"; {failed}, until a take remakes it" if failed else ""
+                items.append(item(CANDIDATE, f"the {pool} pool's warmed template of its kind, {gone}{failed}; the next "
+                                             "new member of the kind warms another", prune_command(pool, udid, kind_after))
                              if allowed else
-                             item(KEPT, f"the {pool} pool's warmed template of its kind, kept: {why}"))
+                             item(KEPT, f"the {pool} pool's warmed template of its kind, kept: {why}{failed}"))
                 if not allowed and kind and getattr(host, "cutoff", None) is not None:
                     waiting.append((items[-1], pool, template, kind))
             elif record: items.append(item(KEPT, f"named in the device record {record}"))

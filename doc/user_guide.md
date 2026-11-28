@@ -3516,18 +3516,28 @@ and with it the simulator tool's approval.
   data and settings included. Use it only for tests that depend on none of that, and still set what you
   rely on, such as appearance or volume.
 - `--erase` gives pristine data instead of the template's. A take also falls back to erasing when no
-  settled template can be copied, and says why.
+  template can be copied, and says why.
 - `qk simulator-pool template --device TYPE --runtime RUNTIME [--refresh]` warms a kind's template with
-  generous limits. Run it before lanes on a new runtime, or when a take reports a cold or unsettled
-  template. A take makes a missing template itself, within shorter limits.
+  generous limits. Run it before lanes on a new runtime, or when a take reports that a template needs
+  remaking. A take makes a missing template itself, within shorter limits.
+
+**A template whose warm-up fails is out of use.** A warm-up fails when the boot does not finish,
+VoiceOver stays silent, or the voice lists do not answer both before and after a reboot. A template
+that failed is never cloned into a new member or copied into a taken one, since it gives failures the
+code did not cause. The member is erased or created instead, and the take says why. The next take or
+creation deletes the template and makes it again, once per take. After three failed warm-ups in a row
+on the same installed runtime builds, takes stop remaking it for 24 hours and say it needs remaking.
+`qk simulator-pool template` remakes it whenever you run it. New runtime builds start the count again,
+and a warm-up that passes clears it. `qk simulator-pool list`, `qk simulator-pool check` given the
+template's UDID, and `qk disk` show a failed template as out of use, with the count, the time of the
+last failure and why it failed.
 
 **Checking a template after refresh.** On the affected Mac, read the command's result or the
 template's line in `qk simulator-pool list`. Check the reported runtime build, whether VoiceOver
-spoke, and whether the voice lists answered both before and after reboot. A successful command
-can save a template whose VoiceOver stayed cold or whose voice lists did not settle. A take of an
-existing member can erase it again using that saved result without rerunning the warm-up. To
-verify recovery, check that the next default take of an existing member reports a reset from
-that template. For a lane that exercises VoiceOver, verify the speech probe separately.
+spoke, and whether the voice lists answered both before and after reboot. The command exits 1 when
+the warm-up fails, and the template stays out of use. To verify recovery, check that the next default
+take of an existing member reports a reset from that template. For a lane that exercises VoiceOver,
+verify the speech probe separately.
 
 **App accessibility.** A hosted test that reads UIKit's and SwiftUI's own accessibility in process, such
 as an accessibility snapshot of system views, asks for it with `--app-accessibility` on
