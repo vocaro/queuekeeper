@@ -165,17 +165,24 @@ class PullRequestQueue(PullRequestProject):
         with patch("builtins.print"), self.assertRaisesRegex(ValueError, r"qk land --pr NUMBER"):
             mq.add(self.repo, "a")
 
-    def test_a_pull_request_with_a_merge_in_it_is_refused(self):
+    def test_a_pull_request_with_a_merge_of_main_in_it_lands_as_one_merge(self):
+        """As GitHub's Update branch leaves one (vocaro/queuekeeper#395): its entry names its own commits, and the merge
+        in it lands as it is."""
         request = self.pull(7, "feature.txt")
+        own = request["head"]
         self.commit("later.txt", "main-later")
         run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
         run(self.repo, "git", "checkout", "-q", "feature-7")
         run(self.repo, "git", "merge", "-q", "--no-edit", "origin/main")
         request["head"] = run(self.repo, "git", "rev-parse", "HEAD")
         run(self.repo, "git", "push", "-q", "-f", "origin", f"{request['head']}:refs/pull/7/head")
-        with patch("builtins.print"), self.assertRaisesRegex(ValueError, "rebase its branch onto origin/main"):
-            mq.add(self.repo, request["head"], pull_request=request)
-        self.assertEqual(mq.Queue(self.repo).all(), [])
+        identifier = self.queue(request)
+        self.assertEqual(self.state(identifier)["commits"], [own])
+        with contextlib.redirect_stdout(io.StringIO()): self.assertEqual(self.work(), 0)
+        entry = self.state(identifier)
+        self.assertEqual(entry["state"], "landed")
+        self.assertEqual(self.parents(entry["landedAs"])[1], request["head"])
+        self.assertTrue({"feature.txt", "later.txt"} <= self.main_files())
 
     def test_landing_the_same_pull_request_again_replaces_its_entry(self):
         first = self.queue(self.pull(7, "feature.txt"))
@@ -294,6 +301,34 @@ class LabeledPullRequestsQueued(PullRequestProject):
             self.assertEqual(mq.queue_labeled(self.repo, say=said.append), 1)
         self.assertIn("gh is not signed in", said[0])
         self.assertEqual(mq.Queue(self.repo).all(), [])
+
+
+class PullRequestProjectLook(Fixture):
+    """In a pull-request project the launcher's look checks pull requests with no status yet (vocaro/queuekeeper#396)."""
+    def setUp(self):
+        super().setUp()
+        self.configured = self.config()
+        self.configured["integration"] = "pull-request"
+
+    def looked(self):
+        with patch.object(pull_requests, "check_open", return_value=0) as checked, \
+                patch.object(pull_requests, "labeled") as listed, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(mq.run(self.repo, if_waiting=True), 0)
+        listed.assert_not_called()
+        return [call.args[1] for call in checked.call_args_list]
+
+    def test_the_look_checks_with_gate_or_the_lanes_pullRequests_names(self):
+        self.publish(self.configured, "Integrate through pull requests")
+        self.assertEqual(self.looked(), [["gate"]])
+        self.configured["lanes"]["build"] = {"command": ["true"]}
+        self.configured["pullRequests"] = {"lanes": ["gate", "build"]}
+        self.publish(self.configured, "Check two lanes")
+        self.assertEqual(self.looked(), [["gate", "build"]])
+
+    def test_a_lane_the_project_lacks_is_no_check(self):
+        self.configured["pullRequests"] = {"lanes": ["build"]}
+        self.publish(self.configured, "Name a lane it lacks")
+        self.assertEqual(self.looked(), [])
 
 
 class DirectMainProject(Fixture):

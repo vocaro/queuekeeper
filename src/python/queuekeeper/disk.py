@@ -39,7 +39,8 @@ CANDIDATE, OWNER, KEPT = "candidate", "owner", "kept"
 STATUS_ORDER = {CANDIDATE: 0, OWNER: 1, KEPT: 2}
 # The categories, in the order a report lists them and --delete removes them. A plugin adds its own (extend).
 CATEGORIES = {"kept-results": "Lane results kept by commit beside the receipts (pruned by their rule)",
-              "pinned-checkouts": "Checkouts runs are pinned to, of the folders projects' plugins load from"}
+              "pinned-checkouts": "Checkouts runs are pinned to, of the folders projects' plugins load from",
+              "pull-request-checkouts": "Checkouts qk pr check keeps per open pull request (removed by qk pr check)"}
 # --delete removes every candidate category without asking (the owner's decision, 2026-11-05, widening that
 # of 2026-11-03 from simulators and runtimes to every candidate): a candidate is what the rules prove nobody
 # owns, so it needs no second judgment; what only the owner can judge is an owner item, never removed.
@@ -531,6 +532,25 @@ def pinned_checkouts(host, usage, sizes):
                  sum(sizes.of(path) for path in found), None, idle)]
 
 
+def pull_request_checkouts(host, usage, sizes):
+    """Each checkout qk pr check keeps for a pull request, .git/queuekeeper-pr-checks/NUMBER in a project's main
+    checkout, with its build output (vocaro/queuekeeper#397). Each is kept: the next qk pr check removes one once GitHub
+    says its pull request is merged or closed (pull_requests.dispose), which is no fact this inventory can read."""
+    items = []
+    for main in main_checkouts(host):
+        folder = main / ".git/queuekeeper-pr-checks"
+        if not folder.is_dir(): continue
+        for path in sorted((path for path in folder.iterdir() if path.is_dir() and path.name.isdigit()),
+                           key=lambda path: int(path.name)):
+            use = usage.of(path)
+            reason = (f"{main.name} pull request {path.name}'s checkout, kept so that its checks build warm; the next "
+                      "qk pr check removes it once GitHub says the pull request is merged or closed"
+                      + (f"; in use: {described(use)}" if use else ""))
+            items.append(Item("pull-request-checkouts", str(path), KEPT, reason, sizes.of(path), None,
+                              host.now - last_activity(path)))
+    return items
+
+
 def orphaned_pin(checkout):
     """Whether offload_host.stale_pins listed checkout only for its ready file, its commit's folder being gone."""
     return not checkout.parent.exists() and not checkout.parent.is_symlink()
@@ -582,6 +602,9 @@ def inventory(host, sizes, categories=None):
     if "pinned-checkouts" in wanted:
         sizes.begin("pinned-checkouts")
         items += pinned_checkouts(host, usage, sizes)
+    if "pull-request-checkouts" in wanted:
+        sizes.begin("pull-request-checkouts")
+        items += pull_request_checkouts(host, usage, sizes)
     for listed in PLUGIN_ITEMS:
         named = [category for category in PLUGIN_CATEGORIES.get(listed, ()) if category in wanted]
         if named: sizes.begin(", ".join(named))

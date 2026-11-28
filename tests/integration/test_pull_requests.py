@@ -257,6 +257,33 @@ class PullRequestCheck(unittest.TestCase):
                            "label": "queue"}])
         self.assertIn("pr list --state open --base main --label queue", self.log.read_text())
 
+    def test_open_pull_requests_without_a_status_of_the_lanes_are_checked_one_by_one(self):
+        self.request.write_text(json.dumps([
+            {"number": 7, "isDraft": False, "statusCheckRollup": []},
+            {"number": 8, "isDraft": False, "statusCheckRollup": [{"__typename": "StatusContext",
+                                                                     "context": "queuekeeper/gate", "state": "SUCCESS"}]},
+            {"number": 9, "isDraft": True, "statusCheckRollup": []},
+            {"number": 10, "isDraft": False, "statusCheckRollup": [{"__typename": "CheckRun", "name": "ci"}]}]))
+        self.assertEqual(pull_requests.unchecked(self.project, ["gate"]), [7, 10])
+        self.assertEqual(pull_requests.unchecked(self.project, ["gate", "build"]), [7, 8, 10])
+        checked = []
+        with patch.object(pull_requests, "check", lambda root, number, lanes: checked.append((number, lanes)) or 0):
+            self.assertEqual(pull_requests.check_open(self.project, ["gate"], say=lambda line: None), 0)
+        self.assertEqual(checked, [(7, ["gate"]), (10, ["gate"])])
+        # One that fails makes the whole look fail; none to check is 0.
+        with patch.object(pull_requests, "check", lambda root, number, lanes: 1 if number == 7 else 75):
+            self.assertEqual(pull_requests.check_open(self.project, ["gate"], say=lambda line: None), 1)
+        self.request.write_text(json.dumps([]))
+        said = []
+        self.assertEqual(pull_requests.check_open(self.project, ["gate"], say=said.append), 0)
+        self.assertIn("every open pull request on main has its queuekeeper/gate status", said[0])
+        self.request.write_text("not json")
+        with self.assertRaisesRegex(ValueError, "JSON"): pull_requests.unchecked(self.project, ["gate"])
+
+    def test_qk_pr_check_open_takes_no_number(self):
+        with self.assertRaises(SystemExit) as stopped: self.qk("--open", "7")
+        self.assertEqual(stopped.exception.code, 2)
+
     def test_a_head_origin_does_not_have_says_to_check_again(self):
         self.pull_request(headRefOid="0" * 40)
         with self.lane(): status, said = self.qk("7")

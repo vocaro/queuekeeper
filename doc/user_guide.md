@@ -196,7 +196,8 @@ qk pr check 42
 - **What it tests.** It fetches the pull request's head and base and merges them in a checkout
   of its own under the repository's Git directory, `.git/queuekeeper-pr-checks/42`, kept between
   checks so builds stay warm. Once GitHub says a pull request is merged or closed, the next check
-  removes its checkout, with its build output and logs. The merge is what would land, so that is what the lanes run on.
+  removes its checkout, with its build output and logs. `qk disk` lists each kept checkout and
+  its size. The merge is what would land, so that is what the lanes run on.
   Without a number it checks the current branch's pull request.
 - **What it runs.** Each lane runs as `qk run LANE` in that checkout, so it waits for admission
   and goes to whichever Mac has room. The default is `gate`; name others with `--lane LANE`,
@@ -211,6 +212,12 @@ qk pr check 42
 To make GitHub wait for it, add `queuekeeper/gate` (or each `queuekeeper/LANE`) as a required
 status check in the branch's ruleset.
 
+**Checks start by themselves.** With the [queue launcher](#keep-the-queue-running) set up for the
+project, its look every two minutes checks each open pull request on `main` whose head has no
+status yet: one just opened, or pushed since its last check. It runs the lanes
+`"pullRequests": {"lanes": [...]}` names, `gate` unless it names others, one pull request at a
+time. `qk pr check --open` makes the same look by hand.
+
 A check tests the pull request against `main` as it was. When another pull request merges first,
 a pull request that then conflicts is rebased and pushed, and its new head needs a check of its
 own before GitHub lets it merge. One that does not conflict keeps its earlier `success`, tested
@@ -218,9 +225,9 @@ without the change that just landed; turn on the ruleset's *Require branches to 
 before merging* to have each one updated and checked again, or use the merge queue for pull
 requests ([The queue for pull requests](#the-queue-for-pull-requests)), which tests each one with
 what lands ahead of it. A status belongs to the commit it tested, so a push after
-the check started needs a new check. Nothing runs it on its own: the agents' rule that
-`qk agents setup` writes tells them to run it after opening a pull request and after each push
-([Tell your agents](#tell-your-agents)), and you can run it yourself.
+the check started needs a new check. The agents' rule that `qk agents setup` writes tells them
+to run it after opening a pull request and after each push
+([Tell your agents](#tell-your-agents)), and the launcher's look, below, catches one they miss.
 
 #### The queue for pull requests
 
@@ -244,8 +251,9 @@ ahead of it, batches and bisects as it does for `qk land`, and merges what passe
   commit, `Merge pull request #N from OWNER/BRANCH`, tests that, and pushes exactly what it tested.
   GitHub marks the pull request merged, since its head is then on `main`. The entry's `landedAs`
   is the merge commit.
-- **Its history must be a line from `main`.** A pull request with a merge in it, such as one
-  GitHub's *Update branch* made, is refused: rebase its branch onto `main` and push it.
+- **Merges in its history land as they are.** A pull request whose branch merged `main`, as
+  GitHub's *Update branch* does, is queued like any other: its entry names its own commits, and
+  the queue's merge brings the rest.
 - **A conflict** with `main` or a pull request ahead sends it back, and is never settled by the
   queue: rebase the branch and queue it again. Queuing the same pull request again replaces its
   earlier entry.

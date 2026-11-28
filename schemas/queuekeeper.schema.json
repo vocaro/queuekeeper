@@ -126,7 +126,7 @@
       ]
     },
     "pullRequests": {
-      "description": "How a pull-request-queue project admits pull requests to its merge queue",
+      "description": "How a project that integrates through pull requests admits or checks them",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -134,6 +134,12 @@
           "description": "The label a person adds to a pull request to queue it (default queue)",
           "type": "string",
           "minLength": 1
+        },
+        "lanes": {
+          "description": "The lanes qk pr check runs on a pull request by itself, in a pull-request project (default gate)",
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
         }
       }
     },

@@ -2815,11 +2815,16 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     landed = already_landed(root, tip) if present else []
     replays = None
     if pull_request is not None and (merges or landed):
-        raise ValueError(f"pull request {pull_request['number']} "
-                         + (f"holds {'merges' if len(merges) > 1 else 'a merge'}, {', '.join(m[:12] for m in merges)}"
-                            if merges else f"holds commits origin/main already has, {', '.join(c[:12] for c in landed)}")
-                         + ", which the queue cannot test as one merge yet: rebase its branch onto origin/main, push "
-                         "it, and queue it again")
+        # A pull request lands as one merge of its head (Worker.merge), so the merges in it, such as GitHub's Update
+        # branch makes, land as they are: its entry names its own commits, which the paths and bisection read, and
+        # leaves out the merges and what main already holds (vocaro/queuekeeper#395).
+        held = set(landed)
+        commits = [commit for commit in text(root, "rev-list", "--reverse", "--no-merges", f"{base}..{tip}").split()
+                   if commit not in held]
+        if not commits:
+            print(f"origin/main already holds the changes of pull request {pull_request['number']}: nothing to queue")
+            return None
+        merges, landed = [], []
     if merges or landed:
         # A branch refreshed by merging main, as the app's sync does, lands as its own commits replayed (#217), less
         # those origin/main holds as equal patches, which a rebase leaves out too (#352).
@@ -9936,6 +9941,25 @@ def scan_labeled(root):
         print(f"queue: could not look for labeled pull requests: {error}", flush=True)
 
 
+def look_at_pull_requests(root):
+    """The queue launcher's look at a project's pull requests, every two minutes: a pull-request-queue project queues
+    those labeled (scan_labeled); a pull-request project, which has no queue, checks each whose head has no status yet
+    (pull_requests.check_open, vocaro/queuekeeper#396), holding the worker's lock meanwhile, so that the next look
+    waits for it. Any other project asks GitHub nothing. Never stops the launcher."""
+    try: config = config_at(root, MAIN)
+    except (ValueError, OSError, subprocess.SubprocessError): return
+    if config.get("integration") == PULL_REQUEST_QUEUE: return scan_labeled(root)
+    if config.get("integration") != "pull-request": return
+    from . import pull_requests
+    try:
+        lanes = configuration.check_lanes(config)
+        if not set(lanes) <= set(config.get("lanes", {})): return
+        pull_requests.check_open(root, lanes, say=lambda words: print(
+            f"queue: {time.strftime('%H:%M:%S')} {words}", flush=True))
+    except Exception as error:  # noqa: BLE001 -- checking pull requests never stops the launcher
+        print(f"queue: could not check open pull requests: {error}", flush=True)
+
+
 def queue_labeled(root, say=print, quiet=True):
     """In a pull-request-queue project, queue each open pull request on main that carries the queue's label and has
     no entry at its head yet, waiting, landed, failed or in conflict (vocaro/queuekeeper#376): the label is then the
@@ -10016,7 +10040,7 @@ def run(root, *, if_waiting=False):
             lock = None
             if not free: return 0
             # The launcher's look, every two minutes, is when a label a person added is noticed (queue_labeled).
-            if if_waiting and not queue.held(): scan_labeled(root)
+            if if_waiting and not queue.held(): look_at_pull_requests(root)
             if if_waiting and (queue.held() or not queue.waiting()): return 0
             # A gate its worker's crash left running holds a slot and admission this worker needs.
             remote.stop_dead_dispatches()
