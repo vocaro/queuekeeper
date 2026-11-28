@@ -44,6 +44,8 @@ CATEGORIES = {"kept-results": "Lane results kept by commit beside the receipts (
 # --delete removes every candidate category without asking (the owner's decision, 2026-11-05, widening that
 # of 2026-11-03 from simulators and runtimes to every candidate): a candidate is what the rules prove nobody
 # owns, so it needs no second judgment; what only the owner can judge is an owner item, never removed.
+# The categories whose every item a report lists by its path, however small.
+ALWAYS_LISTED = {"pull-request-checkouts"}
 SEPARATORS = re.compile(r"[\s=,;\"']+")
 DATA_VOLUME = "/System/Volumes/Data"
 # The lock reason the merge queue gives a checkout of its old layout that it could not move while a process
@@ -705,7 +707,8 @@ def report(items, volume, unreadable, min_size, out=print, pressure=None):
         out(title)
         hidden = {}
         for item in group:
-            if item.size < min_size:
+            # A kept pull-request checkout is listed whatever its size, as the user guide says (vocaro/queuekeeper#400).
+            if item.size < min_size and category not in ALWAYS_LISTED:
                 count, size = hidden.get(item.status, (0, 0))
                 hidden[item.status] = (count + 1, size + item.size)
                 continue

@@ -2049,7 +2049,9 @@ class Queue:
                 description = f"{description}: {why.split('. ')[0]}" if why else description
             elif kind == "entry.removed" and entry.get("removedWhy"):
                 description = f"{description}: {entry['removedWhy']}"
-            with contextlib.suppress(Exception): post(self.root, entry["tip"], "gate", state, description)
+            with contextlib.suppress(Exception):
+                post(self.root, entry["tip"], "gate", state, description,
+                     say=lambda words: print(f"queue: {time.strftime('%H:%M:%S')} {words}", flush=True))
 
     def save(self, entry):
         path = self.entries / f"{entry['id']}.json"
@@ -2941,7 +2943,10 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
         if older["state"] == TESTING: print(f"queue: {stopping(queue, older)}", file=sys.stderr)
     queue.emit("entry.queued", entry=identifier, subject=entry["subject"], commits=len(commits), branch=entry["branch"],
                note=note, **flags)
-    print(f"queued {identifier}: {len(commits)} commit(s), {entry['subject']}")
+    if pull_request is not None:
+        print(f"queued {identifier}: pull request {pull_request['number']}'s {len(commits)} commit(s) of its own, which "
+              f"land with the queue's merge of its head, {entry['subject']}")
+    else: print(f"queued {identifier}: {len(commits)} commit(s), {entry['subject']}")
     if riding: print(f"queue: {identifier} {riding}")
     for name in OPTIONS:
         if name in flags: print(f"queue: {identifier} {asked_for(name)}{because(flags)}")
@@ -3169,7 +3174,10 @@ def describe(entry):
     if entry.get("landedAs"):
         # The entry's own last commit on main; the batch's tip beside it when another entry's commit is the tip.
         line += f"  -> {entry['landedAs'][:12]}"
-        if entry.get("landedCommits", 1) > 1: line += f" ({entry['landedCommits']} commits)"
+        if entry.get("pullRequest"):
+            # A pull request lands as its own commits and the queue's merge of them, which its count includes.
+            line += f" ({entry.get('landedCommits', 1)} commits, the queue's merge among them)"
+        elif entry.get("landedCommits", 1) > 1: line += f" ({entry['landedCommits']} commits)"
         if entry.get("landedTip", entry["landedAs"]) != entry["landedAs"]:
             line += f", in batch tip {entry['landedTip'][:12]}"
     for said in replaced_lines(entry): line += f"\n         {said}"
@@ -10009,7 +10017,7 @@ def queue_labeled(root, say=print, quiet=True):
             refused[str(number)] = {"head": head, "why": str(error).split(":")[0][:120]}
             skipped.append(f"#{number}")
             with contextlib.suppress(Exception):
-                pull_requests.post(root, head, "gate", "error", f"not queued: {error}")
+                pull_requests.post(root, head, "gate", "error", f"not queued: {error}", say=say)
             say(f"pull request {number}, labeled {label}, was not queued at {head[:12]}: {error}")
             continue
         if identifier:
@@ -10283,7 +10291,8 @@ def add_arguments(parser):
                                        "or one did, 75 held or still waiting at the limit")
     following.add_argument("id", nargs="+")
     following.add_argument("--limit", type=float, default=WAIT_LIMIT, metavar="SECONDS")
-    following.add_argument("--json", action="store_true", help="write one versioned JSON result; progress goes to standard error")
+    following.add_argument("--json", action="store_true", help="write one versioned JSON result, the entry's for one ID "
+                           "and {schemaVersion, entries: [...]} for several; progress goes to standard error")
     logs = operations.add_parser("logs", help="read a bounded portion of an entry's exact log with a continuation cursor")
     logs.add_argument("id", help="entry whose exact recorded logs are read, including settled entries")
     logs.add_argument("--json", action="store_true", help="one JSON chunk with content, artifact and nextCursor")

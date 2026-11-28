@@ -356,7 +356,11 @@ class ConfigurationTests(unittest.TestCase):
                 with self.subTest(declared=declared):
                     (Path(directory) / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
                         **declared}))
-                    with patch.object(cli.shutil, "which", return_value="/usr/bin/true"), patch.object(cli, "source_identity", return_value={}), contextlib.redirect_stdout(StringIO()) as output:
+                    # What a pull-request project needs of gh is test_pull_requests's, against a stand-in: here gh
+                    # is never asked (vocaro/queuekeeper#404).
+                    from queuekeeper import pull_requests
+                    with patch.object(cli.shutil, "which", return_value="/usr/bin/true"), patch.object(cli, "source_identity", return_value={}), \
+                            patch.object(pull_requests, "doctor_errors", return_value=[]), contextlib.redirect_stdout(StringIO()) as output:
                         self.assertEqual(cli.main(["--project", directory, "doctor"]), 0)
                     found = [w for w in json.loads(output.getvalue())["warnings"] if "named gate" in w]
                     self.assertEqual(bool(found), warned, found)

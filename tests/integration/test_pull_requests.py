@@ -20,7 +20,9 @@ from queuekeeper import cli, pull_requests
 FAKE_GH = """#!/bin/sh
 printf '%s\\n' "$*" >> "$FAKE_GH_LOG"
 case "$1 $2" in
-  "pr view"|"pr list") cat "$FAKE_GH_PR" ;;
+  "pr view") cat "$FAKE_GH_PR" ;;
+  "pr list") cat "${FAKE_GH_LIST:-$FAKE_GH_PR}" ;;
+  "auth status") [ -z "$FAKE_GH_SIGNED_OUT" ] || { echo "You are not logged into any GitHub hosts." >&2; exit 1; } ;;
   "api --method") exit "${FAKE_GH_POST_STATUS:-0}" ;;
   *) echo "fake gh: unexpected $*" >&2; exit 1 ;;
 esac
@@ -176,6 +178,45 @@ class PullRequestCheck(unittest.TestCase):
         self.request.write_text(json.dumps([]))
         self.assertEqual(pull_requests.dispose(self.project, keep=7), [])
 
+    def test_a_closed_pull_requests_own_checkout_and_lone_locks_go_too(self):
+        """Checking a closed pull request, or a look with nothing to check, still tidies (vocaro/queuekeeper#400)."""
+        with self.lane(0): self.qk("7")
+        folder = Path(self.git(self.project, "rev-parse", "--path-format=absolute", "--git-common-dir")) \
+            / pull_requests.FOLDER
+        (folder / "3.lock").write_text("")
+        # gh views PR 7 as closed, and lists no open pull request.
+        self.pull_request(state="CLOSED")
+        listed = self.root / "list.json"
+        listed.write_text("[]")
+        with patch.dict(os.environ, {"FAKE_GH_LIST": str(listed)}): status, said = self.qk("7")
+        self.assertEqual(status, 0, said)
+        self.assertIn("is closed, so nothing is checked", said)
+        self.assertFalse((folder / "7").exists())
+        self.assertFalse((folder / "3.lock").exists())
+        # With nothing to check, the open look tidies as well.
+        self.pull_request()
+        with self.lane(0): self.qk("7")
+        self.assertTrue((folder / "7").is_dir())
+        with patch.dict(os.environ, {"FAKE_GH_LIST": str(listed)}):
+            self.assertEqual(pull_requests.check_open(self.project, ["gate"], say=lambda line: None), 0)
+        self.assertFalse((folder / "7").exists())
+
+    def test_in_a_pull_request_queue_project_a_check_posts_apart_from_the_queues_status(self):
+        """queuekeeper/gate is the queue's there; a check by hand posts queuekeeper/check/LANE (vocaro/queuekeeper#403)."""
+        config = json.loads((self.project / "queuekeeper.json").read_text())
+        self.git(self.project, "checkout", "-q", "main")
+        self.write("queuekeeper.json", json.dumps({**config, "integration": "pull-request-queue"}))
+        self.commit("Queue labeled pull requests")
+        self.git(self.project, "push", "-q", "origin", "main")
+        self.git(self.project, "checkout", "-q", "feature")
+        self.git(self.project, "fetch", "-q", "origin")
+        self.assertEqual(pull_requests.check_context(self.project), pull_requests.CHECK_CONTEXT)
+        with self.lane(0): status, said = self.qk("7")
+        self.assertEqual(status, 0, said)
+        contexts = [line.split(" -f context=")[1].split(" -f ")[0] for line in self.log.read_text().splitlines()
+                    if line.startswith("api --method POST")]
+        self.assertEqual(set(contexts), {"queuekeeper/check/gate"})
+
     def test_the_kept_checkout_is_reused_and_cleaned_between_checks(self):
         with self.lane(0): self.qk("7")
         checkout = Path(self.git(self.project, "rev-parse", "--path-format=absolute", "--git-common-dir")) \
@@ -283,6 +324,27 @@ class PullRequestCheck(unittest.TestCase):
     def test_qk_pr_check_open_takes_no_number(self):
         with self.assertRaises(SystemExit) as stopped: self.qk("--open", "7")
         self.assertEqual(stopped.exception.code, 2)
+
+    def test_doctor_reports_what_a_pull_request_project_lacks_to_reach_github(self):
+        """gh installed, signed in, and a GitHub origin (vocaro/queuekeeper#404)."""
+        project = {"integration": "pull-request"}
+        # This fixture's origin is a folder, not GitHub.
+        [error] = pull_requests.doctor_errors(self.project, project)
+        self.assertIn("not a GitHub repository", error)
+        self.git(self.project, "remote", "set-url", "origin", "git@github.com:o/r.git")
+        self.assertEqual(pull_requests.doctor_errors(self.project, project), [])
+        self.assertEqual(pull_requests.doctor_errors(self.project, {"integration": "pull-request-queue"}), [])
+        with patch.dict(os.environ, {"FAKE_GH_SIGNED_OUT": "1"}):
+            [error] = pull_requests.doctor_errors(self.project, project)
+        self.assertIn("not signed in (You are not logged into any GitHub hosts.): run `gh auth login`", error)
+        with patch.object(pull_requests.shutil, "which", return_value=None):
+            [error] = pull_requests.doctor_errors(self.project, project)
+        self.assertIn("which is not installed", error)
+        # Any other project asks nothing of gh.
+        with patch.object(pull_requests, "run") as ran:
+            self.assertEqual(pull_requests.doctor_errors(self.project, {}), [])
+            self.assertEqual(pull_requests.doctor_errors(self.project, {"integration": "direct-main"}), [])
+        ran.assert_not_called()
 
     def test_a_head_origin_does_not_have_says_to_check_again(self):
         self.pull_request(headRefOid="0" * 40)
