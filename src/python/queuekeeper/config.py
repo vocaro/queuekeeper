@@ -1030,6 +1030,13 @@ def preflight_lanes(queue, lanes):
             raise ValueError(f"queue.preflight names {name}, which is not one command that qk land can run before it "
                              f"queues an entry, unadmitted, in a scratch worktree: "
                              f"{'it has ' + ', '.join(keys) if keys else 'it is a self lane'}")
+        # A preflight lane with no timeout runs under PREFLIGHT_LIMIT, not the default lane_timing.check judged against.
+        target = lanes[name].get("targetMinutes")
+        if "timeout" not in lanes[name] and isinstance(target, (int, float)) and not isinstance(target, bool) \
+                and target * 60 > PREFLIGHT_LIMIT:
+            raise ValueError(f"{name}.targetMinutes {target:g} is past the {PREFLIGHT_LIMIT}s preflight limit {name} "
+                             f"runs under, because queue.preflight lists it and it gives no timeout: lower the target "
+                             f"or give the lane a longer timeout")
 
 
 def quick_setting(queue, lanes):

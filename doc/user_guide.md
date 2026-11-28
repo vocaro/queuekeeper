@@ -2048,6 +2048,10 @@ group or a lane in `release.lanes`:
 "unit": {"command": ["..."], "timeout": 1800, "targetMinutes": 8}
 ```
 
+A lane that `queue.preflight` lists and that gives no `timeout` runs under the 5-minute preflight
+limit, so config refuses a `targetMinutes` of that lane past 5, naming the limit and that
+`queue.preflight` sets it; give the lane a `timeout` of its own to hold a longer target.
+
 Each whole run that ends by itself, passing or failing, past its target warns once, naming the
 lane, its time and its target:
 

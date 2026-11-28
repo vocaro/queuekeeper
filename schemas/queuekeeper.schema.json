@@ -382,7 +382,7 @@
             }
           },
           "targetMinutes": {
-            "description": "How long the lane is meant to take, in minutes, inside its timeout. A run that ends, passing or failing, past it warns, naming the lane, its time and its target; nothing fails or stops for it. Any lane with a command takes it, a lane group's members too, and config refuses one past the lane's timeout",
+            "description": "How long the lane is meant to take, in minutes, inside its timeout. A run that ends, passing or failing, past it warns, naming the lane, its time and its target; nothing fails or stops for it. Any lane with a command takes it, a lane group's members too, and config refuses one past the lane's timeout, or past the 300-second preflight limit for a queue.preflight lane that gives none",
             "type": "number",
             "exclusiveMinimum": 0
           },
