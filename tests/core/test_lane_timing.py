@@ -313,6 +313,21 @@ class TargetTests(unittest.TestCase):
             config.parse(json.dumps({"schemaVersion": 1, "name": "test", "lanes": {
                 **members, "both": {"parallel": ["a", "b"], "targetMinutes": 1}}}))
 
+    def test_a_preflight_lane_without_a_timeout_takes_a_target_inside_the_preflight_limit(self):
+        """vocaro/queuekeeper#382: such a lane runs under the preflight limit, not the default timeout."""
+        def parse(preflight, **lane):
+            return config.parse(json.dumps({"schemaVersion": 1, "name": "test", "queue": {"preflight": preflight},
+                                            "lanes": {"test": {"command": ["true"], **lane}}}))
+        limit = config.PREFLIGHT_LIMIT / 60
+        self.assertEqual(parse(["test"], targetMinutes=limit)["lanes"]["test"]["targetMinutes"], limit, "at the limit")
+        parse(["test"], targetMinutes=1)
+        parse(["test"], targetMinutes=limit + 1, timeout=1800)
+        with self.assertRaisesRegex(ValueError, rf"test.targetMinutes {limit + 1:g} is past the {config.PREFLIGHT_LIMIT}s "
+                                                "preflight limit test runs under, because queue.preflight lists it"):
+            parse(["test"], targetMinutes=limit + 1)
+        self.assertEqual(parse([], targetMinutes=limit + 1)["lanes"]["test"]["targetMinutes"], limit + 1,
+                         "a lane the queue does not list as preflight keeps the default timeout")
+
     def test_the_schema_takes_a_target_on_a_lane(self):
         schema = json.loads((Path(cli.TOOLKIT_ROOT) / "schemas/queuekeeper.schema.json").read_text())
         self.assertIn('"targetMinutes"', json.dumps(schema))
