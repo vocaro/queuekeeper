@@ -5650,13 +5650,21 @@ class LaneLabelTests(unittest.TestCase):
     """A lane run's admission label names its project, so that two projects' lanes of one name stay apart in
     waiting messages, the guard and the admission log (#51). A label a caller gives, an qk admit command
     line, and entries written before labels named the project are kept as they are."""
-    setUp, tearDown = ResourceTests.setUp, ResourceTests.tearDown
+    tearDown = ResourceTests.tearDown
     hold, lines = ResourceTests.hold, AdmissionLogTests.lines
     LAUNCH = ("import sys\nfrom unittest.mock import patch\nfrom queuekeeper import cli\n"
               "with patch.object(cli, 'refresh_policy', return_value='policy'), "
               "patch.object(cli, 'source_identity', return_value={}):\n"
               "    raise SystemExit(cli.main(sys.argv[1:]))\n")
     QUICK = [sys.executable, "-c", "pass"]
+
+    def setUp(self):
+        ResourceTests.setUp(self)
+        # Placement offers work to the farm only when standard input is not redirected, which depends on how the
+        # run was started (a terminal, /dev/null or a pipe): these tests pin it to not redirected (#399).
+        patcher = patch.object(cli, "redirected_stdin", return_value=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def project(self, name, **lanes):
         root = Path(self.temp.name) / name
@@ -5691,7 +5699,7 @@ class LaneLabelTests(unittest.TestCase):
         ready = ready or self.marker(root, lane, "started").exists
         environment = {**os.environ, "PYTHONPATH": host_isolation.pythonpath()}
         run = subprocess.Popen([sys.executable, "-c", self.LAUNCH, "--project", str(root), "run", lane],
-                               env=environment, stderr=subprocess.DEVNULL)
+                               env=environment, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         def end():
             if run.poll() is None:
                 run.kill()
