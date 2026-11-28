@@ -129,6 +129,39 @@ def labeled(root, label):
             and not item.get("isDraft")]
 
 
+def unchecked(root, lanes):
+    """The numbers of the open pull requests on main, drafts left out, whose head carries no queuekeeper/LANE status
+    for one of lanes: a pull request opened, or pushed, since it was last checked. Raises ValueError when gh cannot say."""
+    status, out, err = run(["gh", "pr", "list", "--state", "open", "--base", "main", "--limit", "100", "--json",
+                            "number,isDraft,statusCheckRollup"], root)
+    if status: raise ValueError(f"gh could not list the open pull requests: {err or out or f'exit {status}'}")
+    try: found = json.loads(out)
+    except ValueError as error: raise ValueError(f"gh answered with something other than JSON: {error}") from error
+    if not isinstance(found, list): raise ValueError("gh's list of pull requests is not a list")
+    wanted = {CONTEXT.format(lane) for lane in lanes}
+    return [item["number"] for item in found if isinstance(item, dict) and item.get("number") and not item.get("isDraft")
+            and not wanted <= {check.get("context") for check in item.get("statusCheckRollup") or []
+                               if isinstance(check, dict)}]
+
+
+def check_open(root, lanes, say=say):
+    """`qk pr check --open`, and the queue launcher's look in a pull-request project: check each open pull request
+    whose head has no status of lanes yet, one at a time (vocaro/queuekeeper#396). The worst exit of them, 0 for none."""
+    numbers = unchecked(root, lanes)
+    if not numbers:
+        say(f"every open pull request on main has its {', '.join(CONTEXT.format(lane) for lane in lanes)} status")
+        return 0
+    worst = 0
+    for number in numbers:
+        say(f"pull request {number} has no status of its head yet: checking it")
+        try: status = check(root, number, lanes)
+        except ValueError as error:
+            print(f"qk pr check: pull request {number}: {error}", file=sys.stderr)
+            status = FAILED
+        worst = status if worst == 0 or status == FAILED else worst
+    return worst
+
+
 def recheck(root, pull_request, head):
     """Whether the queue may still push pull_request, queued at head, once its batch passed: (True, None); (False,
     why) when it was closed, its head moved or its label was taken off while it waited; or (None, why) when gh could
@@ -311,6 +344,8 @@ def main(root, argv):
     checked = actions.add_parser("check", help="run lanes on the pull request merged with its base, posting "
                                  "queuekeeper/LANE statuses on its head commit")
     checked.add_argument("number", nargs="?", type=int, help="the pull request; the current branch's without it")
+    checked.add_argument("--open", action="store_true", help="check each open pull request on main whose head has no "
+                         "status of the lanes yet, as the queue launcher's look does in a pull-request project")
     checked.add_argument("--lane", action="append", default=[], metavar="LANE",
                          help="a lane to run; repeat for more (default gate)")
     actions.add_parser("queue", help="in a pull-request-queue project, queue each open pull request on main that "
@@ -326,6 +361,15 @@ def main(root, argv):
         try: return queue_labeled(Path(top), say=lambda line: print(f"qk pr queue: {line}", flush=True), quiet=False)
         except ValueError as error:
             print(f"qk pr queue: {error}", file=sys.stderr)
+            return FAILED
+    if args.open:
+        if args.number: parser.error("--open checks every open pull request, so it takes no number")
+        from . import config as configuration
+        try:
+            lanes = args.lane or configuration.check_lanes(configuration.load(Path(top)))
+            return check_open(Path(top), lanes)
+        except (OSError, ValueError) as error:
+            print(f"qk pr check: {error}", file=sys.stderr)
             return FAILED
     try: return check(Path(top), args.number, args.lane)
     except ValueError as error:

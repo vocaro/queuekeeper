@@ -233,9 +233,19 @@ QUEUE_LABEL = "queue"
 
 def pull_request_settings(settings):
     if not isinstance(settings, dict): raise ValueError("pullRequests must be an object")
-    if set(settings) - {"label"}: raise ValueError(f"Unknown pullRequests keys: {sorted(set(settings) - {'label'})}")
+    unknown = set(settings) - {"label", "lanes"}
+    if unknown: raise ValueError(f"Unknown pullRequests keys: {sorted(unknown)}")
     if "label" in settings and (not isinstance(settings["label"], str) or not settings["label"].strip()):
         raise ValueError("pullRequests.label must be a nonempty string")
+    lanes = settings.get("lanes", ["gate"])
+    if not isinstance(lanes, list) or not lanes or not all(isinstance(lane, str) and lane for lane in lanes):
+        raise ValueError("pullRequests.lanes must be a nonempty list of lane names")
+
+
+def check_lanes(config):
+    """The lanes qk pr check runs on a pull request by itself, in a pull-request project (vocaro/queuekeeper#396):
+    pullRequests.lanes, else gate."""
+    return list(config.get("pullRequests", {}).get("lanes", ["gate"]))
 
 
 def queue_label(config):

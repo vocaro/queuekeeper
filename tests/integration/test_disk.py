@@ -266,6 +266,25 @@ class KeptResultsTests(Fixture):
         self.assertEqual(self.items(self.host(now=self.now), ["kept-results"])[str(self.store)].status, disk.KEPT)
 
 
+class PullRequestCheckoutTests(Fixture):
+    """The checkouts qk pr check keeps per pull request, listed and kept (vocaro/queuekeeper#397)."""
+    def test_each_kept_pull_request_checkout_is_listed_and_kept(self):
+        self.assertEqual(self.items(self.host(), ["pull-request-checkouts"]), {})
+        folder = self.main / ".git/queuekeeper-pr-checks"
+        for number in (12, 7):
+            self.worktree(str(number), parent=folder)
+        (folder / "7.lock").write_text("")
+        items = self.items(self.host(), ["pull-request-checkouts"])
+        self.assertEqual(list(items), [str(folder / "7"), str(folder / "12")])
+        item = items[str(folder / "7")]
+        self.assertEqual((item.category, item.status, item.command), ("pull-request-checkouts", disk.KEPT, None))
+        self.assertIn("Project pull request 7's checkout", item.reason)
+        self.assertIn("the next qk pr check removes it once GitHub says the pull request is merged or closed",
+                      item.reason)
+        processes = [disk.Process(301, "python3", cwd=str(folder / "12"))]
+        self.assertIn("in use", self.items(self.host(processes), ["pull-request-checkouts"])[str(folder / "12")].reason)
+
+
 class ProgressTests(Extended):
     """vocaro/queuekeeper#212: a run says on stderr which pass it is in and how far it has got, at most one line
     each interval besides the forced ones, and its stdout reaches a file line by line."""
