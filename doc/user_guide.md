@@ -1554,6 +1554,10 @@ With no number in `queuekeeper.json`:
   For a group, name the member whose count fell. If an outer gate also checks its own aggregate
   count and that count fell, name the outer gate too.
 
+  Git reads it only as a trailer: a line in the message's final paragraph, beside lines such as
+  `Co-Authored-By`, with no blank line between them. A `Tests-Removed:` line in an earlier paragraph
+  counts for nothing, and the refusal names each commit that has one there and says to move it.
+
   In the merge queue, a gate that falls short sends back the entry that removes tests without
   this trailer, and the rest of the batch gates again without it.
 

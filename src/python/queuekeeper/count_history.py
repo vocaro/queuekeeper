@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 
@@ -240,6 +241,23 @@ def acknowledged(root, since, commit, lane):
     return lane in named or EVERY_LANE in named
 
 
+def misplaced(root, since, commit, lane):
+    """The short ids of commits after since, up to commit, whose message has a `Tests-Removed:` line naming the lane, or
+    every lane, that Git does not read as a trailer, because it is not in the message's final paragraph of trailers."""
+    out = git(root, "log", f"--format=%h%x1f%(trailers:key={TRAILER},valueonly,separator=%x2C)%x1f%B%x1e",
+              f"{since}..{commit}")
+    line = re.compile(rf"^[ \t]*{TRAILER}[ \t]*:(.*)$", re.IGNORECASE | re.MULTILINE)
+    found = []
+    for record in (out or "").split("\x1e"):
+        parts = record.strip("\n").split("\x1f", 2)
+        if len(parts) != 3: continue
+        short, trailers, message = parts
+        read = {name.strip() for name in trailers.replace("\n", ",").split(",")}
+        written = {name.strip() for said in line.findall(message) for name in said.split(",")}
+        if {lane, EVERY_LANE} & (written - read): found.append(short)
+    return found
+
+
 def dropped(root, store, lane, receipt, here, say=None, group=None):
     """Why a whole run of the lane whose own receipt is receipt failed, having executed fewer tests than its last
     passing whole run on main on the same Mac, or None when it did not, or no run on main recorded a count. A Mac with
@@ -266,6 +284,10 @@ def dropped(root, store, lane, receipt, here, say=None, group=None):
     if acknowledged(root, found.commit, commit, lane):
         if say: say(f"{words}, which a commit since says with {TRAILER}: {lane}")
         return None
+    wrong = misplaced(root, found.commit, commit, lane)
+    hint = (f". {', '.join(wrong)} {'has' if len(wrong) == 1 else 'have'} a {TRAILER} line that is not in the final "
+            f"paragraph of its message, where Git reads trailers, so it does not count: move it beside the other "
+            f"trailers, such as Co-Authored-By, with no blank line between them") if wrong else ""
     return (f"{words}. If tests were removed on purpose, add the trailer `{TRAILER}: {lane}` to a commit after "
             f"{found.commit[:12]}; otherwise find what stopped running, such as a bundle, module or file the lane no "
-            f"longer selects or whose tests now skip")
+            f"longer selects or whose tests now skip{hint}")

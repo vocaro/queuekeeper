@@ -167,6 +167,27 @@ class CountHistoryTests(unittest.TestCase):
         self.keep(acknowledged, 25)
         self.assertIsNotNone(self.run_at(self.commit(), 20)[0])
 
+    def test_a_tests_removed_line_outside_the_trailer_block_is_named_and_still_counts_for_nothing(self):
+        """vocaro/queuekeeper#389: a blank line before Co-Authored-By left the line out of Git's trailers."""
+        first = self.commit()
+        self.keep(first, 30)
+        head = self.commit("Remove tests\n\nTests-Removed: gate\n\nCo-Authored-By: Someone <a@example.com>")
+        why, said = self.run_at(head, 25)
+        self.assertIsNotNone(why)
+        self.assertEqual(said, [])
+        self.assertIn(f"{head[:7]} has a Tests-Removed line that is not in the final paragraph of its message", why)
+        self.assertIn("move it beside the other trailers", why)
+        # A line naming only another lane, a line in prose and a true trailer draw no such advice.
+        for message in ("Remove tests\n\nTests-Removed: unit\n\nCo-Authored-By: Someone <a@example.com>",
+                        "Mention Tests-Removed: gate in prose", "Remove tests"):
+            with self.subTest(message):
+                git(self.root, "reset", "-q", "--hard", first)
+                why, _ = self.run_at(self.commit(message), 25)
+                self.assertIsNotNone(why)
+                self.assertNotIn("final paragraph", why)
+        git(self.root, "reset", "-q", "--hard", first)
+        self.assertEqual(self.run_at(self.commit("Remove tests\n\nTests-Removed: gate"), 25)[0], None)
+
     def test_no_history_holds_a_run_to_nothing(self):
         self.assertEqual(self.run_at(self.commit(), 0), (None, []))
         # Nor does a checkout with no main to read history on.
