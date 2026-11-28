@@ -2035,6 +2035,10 @@ def perform(argv, report):
             if not os.environ.get(lane_wait.VARIABLE) and not os.environ.get(remote.QUEUE_GATE):
                 held.enter_context(direct_status.tracking(root, args.lane))
             lane_wait.begin(root, args.lane, project_name(root, config), bool(lane.get("wholeHost")))
+            # The bound the lane declares for queue doctor's note on its unmoved holder, which the admission it, or what
+            # it starts, takes records; a lane that declares none leaves no outer lane's to its own work (#70).
+            held.enter_context(patch_environment({resources.UNMOVED_VARIABLE: str(max(1, round(lane["unmovedMinutes"] * 60)))
+                                                  if "unmovedMinutes" in lane else None}))
             # Keep the queue's placement scope at the outer lane.
             queue_context = os.environ.pop(remote.QUEUE_GATE, None)
             queue_gate = bool(queue_context)

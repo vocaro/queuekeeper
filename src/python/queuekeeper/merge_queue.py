@@ -3946,11 +3946,15 @@ def unmoved_for(holder):
 
 
 def unmoved_bound(holder, mac="its Mac"):
-    """(seconds, words) of how long a holder's files may go unchanged before queue doctor notes it: what its lane's own
-    past holds on its Mac measure (offload_host.quiet_bound), or UNMOVED_NOTE when they measure less or are too few to
-    measure, or were not read, as on a Mac whose older version reads none. The words say which and where it came
-    from. A display rule, never a stopping bound (vocaro/queuekeeper#70)."""
+    """(seconds, words) of how long a holder's files may go unchanged before queue doctor notes it: what its lane
+    declares (unmovedMinutes, which admission records as unmovedSeconds), else what its lane's own past holds on its
+    Mac measure (offload_host.quiet_bound), or UNMOVED_NOTE when they measure less or are too few to measure, or were
+    not read, as on a Mac whose older version reads none. The words say which and where it came from. A display rule,
+    never a stopping bound (vocaro/queuekeeper#70)."""
     said = resources.duration
+    declared = holder.get("unmovedSeconds")
+    if type(declared) is int and declared > 0:
+        return declared, f"the {said(declared)} bound its lane declares (unmovedMinutes)"
     default = f"the {said(UNMOVED_NOTE)} a running gate may go unmoved, the default bound"
     bound = holder.get("quietBound")
     if not isinstance(bound, dict) or type(bound.get("holds")) is not int:

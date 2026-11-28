@@ -1497,6 +1497,7 @@ The most useful settings:
 | `stall` | Reports, and optionally stops, a lane that has gone quiet ([Time limits](#time-limits-and-the-gates-budget)) |
 | `timing` | Warns while a lane runs past its usual time, and optionally fails it past a threshold ([Time limits](#time-limits-and-the-gates-budget)) |
 | `targetMinutes` | How long the lane is meant to take, inside its `timeout`; a run that ends past it warns, naming the lane, its time and its target ([Time limits](#time-limits-and-the-gates-budget)) |
+| `unmovedMinutes` | How long the files the lane's admitted work writes may go unchanged before `qk queue doctor` notes its holder as unmoved, in place of the measured or default bound; report only ([Who holds and who waits](#who-holds-and-who-waits)) |
 | `testAllowance` | Seconds the lane's own script allows one test, shown in a direct run's clock on another Mac ([Following a direct run](#following-a-direct-run-on-another-mac)) |
 | `notice` | What an agent is shown when the lane's timeout, stall bound or timing threshold stops it |
 | `disk` | `{"startFreeGB": N}`, the lane's own free-space floor before admission ([Free disk space](#free-disk-space)) |
@@ -2405,7 +2406,16 @@ fewer, or whose measure is under 15 minutes, is judged by the default of 15 minu
 running gate may go without movement. The note names the bound that applied and where it came
 from: measured from how many past holds, or the default and why. JSON gives the measure as the
 holder's `quietBound`: `holds`, `longestSeconds`, `needed` and `seconds`, which is null when
-too few holds are logged. Nothing here stops a holder.
+too few holds are logged. A lane that is quiet for long stretches when healthy, or one too new to
+measure, can state its own bound in minutes, which applies ahead of both, longer or shorter:
+
+```json
+"ui-tests": {"command": ["scripts/test-ios.sh"], "unmovedMinutes": 90}
+```
+
+Its admission records the bound, and anything its command admits records it too, so JSON gives
+it as the holder's `unmovedSeconds`, and the note says the bound is the one its lane declares.
+Nothing here stops a holder.
 
 A fresh, verified JSON waiter can include `lane`, the configured name of a whole single lane
 fixed to this Mac by `--here` or the lane's `here` setting. The field is optional. Groups,

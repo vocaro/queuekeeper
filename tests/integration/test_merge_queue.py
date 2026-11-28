@@ -1717,6 +1717,32 @@ class Doctor(UnittestGate):
         self.assertIn("the default bound, which is longer than the 3m00s measured from its 6 past holds on this Mac "
                       "(1.5 times the longest of them, 2m00s); report only", notes["briefer"])
 
+    def test_an_unmoved_holder_is_judged_by_the_bound_its_lane_declares_ahead_of_its_past_holds(self):
+        """vocaro/queuekeeper#70: a lane's unmovedMinutes, which admission records as unmovedSeconds, judges its
+        holder ahead of what its past holds measure or the default, longer or shorter, and the note says so."""
+        def holder(identity, quiet, declared):
+            return {**self.QUICK_LOOK, "identity": identity, "pid": 4300 + len(identity), "progress": [],
+                    "label": f"BreezEPUB {identity}", "activity": {"quietSeconds": quiet, "source": "a lane's log"},
+                    "quietBound": {"holds": 5, "longestSeconds": 600.0, "needed": 5, "seconds": 900.0},
+                    "unmovedSeconds": declared}
+        holders = [holder("slow", 3000.0, 5400),  # 50 minutes quiet, under the 1h30m it declares: no note
+                   holder("stuck", 6000.0, 5400),
+                   holder("strict", 400.0, 300),  # a project may declare less than the default
+                   holder("measured", 1000.0, None)]  # one that declares none keeps the measured bound
+        with patch.object(mq.farm, "destinations", return_value=()), \
+                patch.object(offload_host, "admissions_now", return_value=self.reading(*holders)):
+            status_, said, report = self.doctor(working=False)
+        self.assertEqual((status_, report["findings"]), (0, []), said)
+        notes = {hint.split("BreezEPUB ", 1)[1].split(" ", 1)[0]: hint.split(" ago): ", 1)[1]
+                 for hint in report["hints"] if hint.startswith("unmoved admission holder")}
+        self.assertEqual(set(notes), {"stuck", "strict", "measured"}, report["hints"])
+        self.assertTrue(notes["stuck"].startswith(
+            "longer than the 1h30m bound its lane declares (unmovedMinutes); report only (vocaro/queuekeeper#70)"),
+            notes["stuck"])
+        self.assertTrue(notes["strict"].startswith("longer than the 5m00s bound its lane declares"), notes["strict"])
+        self.assertTrue(notes["measured"].startswith("longer than the 15m00s bound measured from its 5 past holds"),
+                        notes["measured"])
+
     def test_a_gate_waiting_long_on_a_busy_mac_or_briefly_on_an_idle_one_is_no_finding(self):
         # A wait on a busy Mac is no finding. The separate progress read shows no quiet holders.
         self.waiting_gate(45)
@@ -6642,6 +6668,31 @@ class ImplicitDocsLane(Fixture):
             "command": [sys.executable, str(sent / "bin/qk"), "--project", str(self.repo), "docs", "check"],
             "timeout": configuration.PREFLIGHT_LIMIT})
         self.assertIsNone(configuration.stays(config["lanes"], "docs"))
+
+
+class LaneUnmovedBound(Fixture):
+    """vocaro/queuekeeper#70: qk run names a lane's unmovedMinutes, in seconds, to the admission it and what its command
+    starts take, and a lane that declares none names none, not even an outer lane's."""
+
+    def test_qk_run_names_the_bound_its_lane_declares_and_no_other(self):
+        seen = self.base / "seen"
+        config = self.config()
+        config["lanes"]["gate"] = {"command": ["python3", "-c", "import os, sys; open(sys.argv[1], 'w').write("
+                                               f"os.environ.get({mq.resources.UNMOVED_VARIABLE!r}, 'none'))", str(seen)],
+                                   "unmovedMinutes": 90}
+        self.publish(config, "Declare the gate's unmoved bound")
+        def run():
+            with patch.object(cli, "refresh_policy", return_value="policy"), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as said:
+                self.assertEqual(cli.main(["--project", str(self.repo), "run", "--here", "gate"]), 0, said.getvalue())
+            return seen.read_text()
+        self.assertEqual(run(), "5400")
+        self.assertNotIn(mq.resources.UNMOVED_VARIABLE, os.environ)
+        del config["lanes"]["gate"]["unmovedMinutes"]
+        self.publish(config, "Declare none")
+        with patch.dict(os.environ, {mq.resources.UNMOVED_VARIABLE: "60"}):
+            self.assertEqual(run(), "none")
+            self.assertEqual(os.environ[mq.resources.UNMOVED_VARIABLE], "60")
 
 
 class LaneThatCannotStart(Fixture):

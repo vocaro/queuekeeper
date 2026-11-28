@@ -2336,6 +2336,9 @@ def admissions_now(at=None):
                             # When the files its work writes last changed, for one whose lanes publish no observation.
                             "activity": holder_activity(owner, since, at)
                             if process == "running" and owner.get("uncertain") is not True else None,
+                            # How long its lane says those files may go unchanged, ahead of its quietBound (#70).
+                            "unmovedSeconds": owner["unmovedSeconds"] if type(owner.get("unmovedSeconds")) is int
+                            and owner["unmovedSeconds"] > 0 else None,
                             # One whose process has ended or cannot be confirmed running, admission frees at its next
                             # attempt, stopping what is left of it (vocaro/queuekeeper#23).
                             "reclaimable": process in ("ended", "unknown"),

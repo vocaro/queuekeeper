@@ -186,7 +186,8 @@
                 "disk",
                 "inputs",
                 "environmentInputs",
-                "testAllowance"
+                "testAllowance",
+                "unmovedMinutes"
               ]
             }
           },
@@ -383,6 +384,11 @@
           },
           "targetMinutes": {
             "description": "How long the lane is meant to take, in minutes, inside its timeout. A run that ends, passing or failing, past it warns, naming the lane, its time and its target; nothing fails or stops for it. Any lane with a command takes it, a lane group's members too, and config refuses one past the lane's timeout, or past the 300-second preflight limit for a queue.preflight lane that gives none",
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "unmovedMinutes": {
+            "description": "How long the files the lane's admitted work writes may go unchanged before qk queue doctor notes its holder as unmoved, in place of the bound measured from the lane's past holds on its Mac or the 15-minute default. For a lane that is quiet for long stretches when healthy, such as UI tests that write little until a test bundle ends. Report only: nothing stops the lane for it",
             "type": "number",
             "exclusiveMinimum": 0
           },
