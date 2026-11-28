@@ -98,6 +98,23 @@ def pools(development, run=subprocess.run):
     return frozenset(filter(None, found))
 
 
+def logged_pools(directory=None):
+    """The simulator pools that `qk simulator-pool take` logged a hold of, in the hold log and its predecessor:
+    a project with no checkout under ~/Development still leaves members, which the pruning rules judge as any
+    other pool's (FileHandoffLib's stayed after its checkout went)."""
+    from queuekeeper import offload_host
+    folder = Path(directory) if directory else offload_host.admission_directory()
+    found = set()
+    for name in (offload_host.HOLD_LOG, offload_host.PREVIOUS_HOLD_LOG):
+        try: text = (folder / name).read_text(errors="replace")
+        except OSError: continue
+        for line in text.splitlines():
+            try: pool = json.loads(line).get("pool")
+            except (ValueError, AttributeError): continue
+            if isinstance(pool, str) and pool.strip(): found.add(pool)
+    return frozenset(found)
+
+
 def default_devices(directory):
     """The devices CoreSimulator made for each runtime, which any session may use."""
     return simulator_pool.default_devices(directory)
@@ -663,7 +680,7 @@ class Host(disk.Host):
         devices = host.home / "Library/Developer/CoreSimulator/Devices"
         host.simulators, host.runtimes = _json(run, "list", "-j"), _json(run, "runtime", "list", "-j")
         host.default_devices, host.device_directory, host.records = default_devices(devices), devices, device_records()
-        host.pools = pools(host.development, run)
+        host.pools = pools(host.development, run) | logged_pools()
         host.matches, host.pinned = _json(run, "runtime", "match", "list", "-j"), pinned_builds()
         host.remote_runtimes_by = {mac: runtimes_there(mac) for mac in host.offload_hosts}
         host.remote_runtimes = host.remote_runtimes_by.get(host.offload_host) if host.offload_hosts \

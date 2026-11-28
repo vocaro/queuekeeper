@@ -202,6 +202,17 @@ class SimulatorTests(Fixture):
         git(lagging, "commit", "-q", "-m", "older")
         self.assertEqual(apple_disk.pools(self.development), frozenset({"Project", "Lagging"}))
 
+    def test_the_pools_include_those_the_hold_log_names(self):
+        # A pool whose project has no checkout here, as FileHandoffLib's, is still pruned by its rules.
+        logs = self.root / "slots"
+        logs.mkdir()
+        (logs / "simulator-holds.jsonl").write_text(json.dumps({"event": "take", "pool": "Gone"}) + "\nnot json\n"
+                                                    + json.dumps({"event": "take", "pool": ""}) + "\n")
+        (logs / "simulator-holds.1.jsonl").write_text(json.dumps({"event": "release", "pool": "Older"}) + "\n")
+        self.assertEqual(apple_disk.logged_pools(logs), frozenset({"Gone", "Older"}))
+        # Negative control: no log names nothing.
+        self.assertEqual(apple_disk.logged_pools(self.root / "empty"), frozenset())
+
     def test_booted_recent_reserved_or_referenced_disposable_devices_are_kept(self):
         booted = device(f"P-{uuid.uuid4()}", state="Booted")
         recent = device(f"P-{uuid.uuid4()}", used=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(LATER - 600)))
