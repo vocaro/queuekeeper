@@ -624,7 +624,8 @@ def space_wait(name, seconds, paths, floor=None):
 
 
 def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusive=False, model=False, whole_host=False,
-                  screen=False, placement=None, space=None, floor=None, *, beside=None, foreground=None, wait_lane=None):
+                  screen=False, placement=None, space=None, floor=None, *, beside=None, foreground=None, wait_lane=None,
+                  limit=None):
     """This Mac's heavy-work admission of the work label names, entered in stack, or the work's status
     instead: its status on another Mac when another Mac took it after all, MISCONFIGURED, or
     BUSY when no admission came, after saying so. Work another Mac did not take (offered), declined
@@ -637,7 +638,8 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
     again (screen_relocked). A lane that fills the disk (space, the paths whose volumes it writes) is
     admitted only once they have the free space it needs, floor or the default, and waits for it the same way
     (space_wait). Its admission
-    line says placement (admission_placement)."""
+    line says placement (admission_placement). limit is the seconds the work may run when its caller states a limit of
+    its own, which its entry records for the work that waits behind it (resources.Admission)."""
     refused, said = [], []
     place = resources.Place()
     if offered is not None: place.started = getattr(offered, "started", place.started)
@@ -664,7 +666,7 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
                 left = max(deadline - time.monotonic(), 0) if space or screen else seconds
                 context = resources.Admission(label, exclusive=exclusive, timeout=left,
                                               model=model, whole_host=whole_host, place=place, placement=placement,
-                                              supervised=True, wait_lane=wait_lane)
+                                              supervised=True, wait_lane=wait_lane, limit=limit)
                 admission = context.__enter__()
             except TimeoutError as error:
                 # Admission published nothing but the place, which the finally below leaves.
@@ -1128,7 +1130,8 @@ def admit(root, args, config=None, *, device_window=None):
         closed = plugins.DEVICES.window_closed("the command", waiting)
         if closed is not None: return closed
         admission = admitted_here(stack, "the command", " ".join(command), allowed(args.timeout), offered, args.if_free,
-                                  args.exclusive, args.model, placement=admission_placement(offered, reason))
+                                  args.exclusive, args.model, placement=admission_placement(offered, reason),
+                                  limit=args.time_limit if args.time_limit != processes.DEFAULT_LIMIT else None)
         if isinstance(admission, int): return plugins.DEVICES.not_admitted("the command", waiting, admission)
         sent = offered.sent if offered is not None else {}
         # Once the tree here is no longer what was sent, the command runs from what was sent (#276).

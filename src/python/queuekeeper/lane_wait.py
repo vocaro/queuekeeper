@@ -15,6 +15,7 @@ whole-host are named once, by the outermost run on each Mac (LANE), which also e
 
 Nothing here may stop a lane: a record that cannot be written or read is left as it is."""
 import contextlib
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -48,6 +49,20 @@ STATE = ("kind", "reason", "mac", "offer", "stranded", "pid", "admitted", "probe
 _owned = None  # the record this process named, and so removes (begin, finish)
 _offer = None  # why this run waits for this Mac instead of another Mac, until it is admitted
 _closes = None  # whether this process named the run's lane (LANE), and so ends a wait the run leaves (finish)
+
+
+def after_deadline(due, deadline):
+    """When the holder a waiter waits behind says it will be done by, due as ISO 8601 text, if that falls after
+    deadline, the aware time the wait ends: what the waiter says at once instead of finding out at its deadline. Both
+    the foreground wait, for a holder's expected release (vocaro/queuekeeper#95), and admission, for an exclusive or
+    whole-host holder's stated time limit (vocaro/queuekeeper#255), judge a holder by it. None when due falls within
+    the deadline or is no time with a zone."""
+    if not isinstance(due, str): return None
+    try:
+        moment = datetime.fromisoformat(due.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo is not None and moment > deadline else None
 
 
 def relative(lane):

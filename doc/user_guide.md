@@ -2315,6 +2315,14 @@ When the wait times out, the request fails with nothing run and no lock reclaime
 reason, the Mac and what held it. When no Mac admits the work, the message gives another Mac's
 reason and this Mac's.
 
+Exclusive work admitted with a time limit of its own, `qk admit --exclusive --time-limit SECONDS`,
+records when that limit ends. A request waiting behind it is told at once when the limit ends after its own deadline. The line names the holder, when its
+limit ends, the request's deadline, and a `--timeout` long enough to outlast the limit. Pass that
+`--timeout`, or run the work on another Mac. The request still waits until its own deadline, since
+the holder may finish well before its limit. The message never shortens a wait, and the timeout's
+failure repeats it. A holder whose limit ends before the deadline gets no such line. So does a holder
+with no limit of its own: the 2-hour default is not a stated limit.
+
 #### Who holds and who waits
 
 ```sh
