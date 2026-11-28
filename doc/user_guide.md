@@ -2865,6 +2865,14 @@ each dispatch's state, never by its age or by how many there are:
 
 Each removal is named on standard error as it happens.
 
+**Runs of a lane that overlap on this Mac.** When a second run of a lane starts from the same
+checkout while another holds `.build/queuekeeper/LANE`, it keeps its log, receipt and results in
+`.build/queuekeeper/.runs/LANE/TIME-PID/` and says so. The same rule keeps these by state, never
+by age or count: a run's directory goes when its receipt says it passed, its process has ended,
+and a later run of the lane has finished since. A run that failed, was unmeasured or never
+started, one that is still running, and one whose receipt cannot be read stay until the
+worktree goes. Each removal is named on standard error.
+
 Once the sender has acknowledged a run's journal, a run without a device lease can continue on
 the other Mac if your Mac sleeps or the connection drops. The sender reconnects to collect the
 same run's result. This also applies to `qk remote admit --foreground` without a device lease.

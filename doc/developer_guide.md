@@ -1113,7 +1113,8 @@ A lane this Mac takes runs in this checkout only while its tree is still the com
 A lane that runs here for any reason runs `qk run --here provision` first, inside the lane's
 admission; a failing provision exits 78, no verdict. Nested work, the provision lane itself and
 work another Mac sent run none. A second run of a lane from the same checkout keeps its files in
-`.build/queuekeeper/.runs/LANE/TIME-PID/`. Every `qk run` ends with the summary from
+`.build/queuekeeper/.runs/LANE/TIME-PID/`, kept by its state (`cli.superseded`, see
+[the user guide](user_guide.md#following-a-direct-run-on-another-mac)). Every `qk run` ends with the summary from
 `lane_report.py`; a run on another Mac leaves it to the sender.
 
 ### Stops, sleep and lost connections
