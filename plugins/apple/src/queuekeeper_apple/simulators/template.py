@@ -41,9 +41,9 @@ VOICEOVER_LIMIT = 600
 VOICES_LIMIT = 900
 # Inside a take, a kind's first creation or reset warms its template before the lane's own work begins,
 # so the boot, VoiceOver and each use of the voices get shorter limits there: VoiceOver the probe's
-# default start limit. A template VoiceOver left cold is still cloned, booted once, and one whose
-# voices did not settle is still cloned but never copied into a member; `qk simulator-pool template`
-# warms it again with the full limits.
+# default start limit. A template VoiceOver left cold, or whose voices did not settle, is out of use:
+# never cloned or copied into a member, and remade by the next take, a bounded number of times
+# (pool.REMAKE_LIMIT, vocaro/queuekeeper#203); `qk simulator-pool template` remakes it with the full limits.
 TAKE_BOOT = 300
 TAKE_VOICEOVER_LIMIT = 180
 TAKE_VOICES_LIMIT = 300

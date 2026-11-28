@@ -116,6 +116,23 @@ class SimulatorTests(Fixture):
                          ["simulator-pool", "--pool", "Project", "--owner", "qk disk", "prune", gone["udid"]][-6:])
         for other in (stranger, mislabeled):
             self.assertNotIn("warmed template", items[other["udid"]].reason)
+        self.assertNotIn("out of use", items[template["udid"]].reason)
+
+    def test_a_pool_template_whose_warm_up_failed_says_it_is_out_of_use(self):
+        # vocaro/queuekeeper#203: the pool's record of failed warm-ups in a row shows beside the template.
+        template, gone = device("Project Duo template (iOS-27-0)"), device("Project iPad template (iOS-27-0)", isAvailable=False)
+        failures = {"count": 2, "installedBuilds": ["24A434"], "lastAt": "2026-11-27T02:23:00+00:00",
+                    "why": "its warm-up failed, so it is out of use: its VoiceOver was not warmed: silent for 180 s"}
+        record = json.dumps({"devices": {
+            "Project Duo template (iOS-27-0)": {"device": template["udid"], "state": "released", "warmFailures": failures},
+            "Project iPad template (iOS-27-0)": {"device": gone["udid"], "state": "released", "warmFailures": failures}}})
+        items = self.simulators([template, gone], pools=frozenset({"Project"}), records={"/record.json": record})
+        self.assertEqual(items[template["udid"]].status, disk.KEPT)
+        self.assertIn("; out of use: 2 failed warm-ups in a row, the last at 2026-11-27T02:23:00+00:00: its warm-up "
+                      "failed, so it is out of use: its VoiceOver was not warmed: silent for 180 s, until a take "
+                      "remakes it", items[template["udid"]].reason)
+        self.assertEqual(items[gone["udid"]].status, disk.CANDIDATE)
+        self.assertIn("out of use: 2 failed warm-ups in a row", items[gone["udid"]].reason)
 
     def test_a_pool_member_is_a_candidate_only_under_the_pruning_rule(self):
         stamp = lambda days: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(LATER - days * 86400))

@@ -5,17 +5,21 @@ and runtime. Taking one reserves a shut-down member whose record entries are rel
 still shut down and resets it: a copy of the kind's warmed template's data into the member's data
 folder, which keeps its UDID and the simulator tool's approval, so that the member, and xcodebuild's
 clones of it, boot with the template's finished first boot, VoiceOver's voice and the system's voices
-settled (vocaro-engineering#172); when the pool has no settled template to copy, the member is erased
+settled (vocaro-engineering#172); when the pool has no template whose warm-up passed to copy, the member is erased
 instead and the log says why. When no member of the kind is free, the next one is created under the
 naming scheme, taking the lowest free number, and stays in the pool: a clone of the kind's warmed
 template, `POOL LABEL template (RUNTIME)`, which is made, or remade when the runtime's installed builds
-change or `qk simulator-pool template --refresh` asks, under its own reservation (template.py). A take
+change or `qk simulator-pool template --refresh` asks, under its own reservation (template.py). A template
+whose warm-up failed any step, VoiceOver silent or the voices unsettled among them, is never cloned or copied
+from: the next take or creation remakes it, up to REMAKE_LIMIT failed warm-ups in a row on the same installed
+builds, then once each REMAKE_PAUSE, and members are erased or created meanwhile (vocaro/queuekeeper#203). A take
 with erase erases the member as before, and one with keep_state reserves and boots it without resetting
 or erasing it. Pruning deletes a member
 unused and released for an hour, the lowest-numbered of its kind only on request and once the whole kind
 is unused for 7 days, and a template whose runtime is no longer installed or whose kind has no member left
 and is as long unused, and records each deletion. Nothing
-else here deletes or renames a simulator, except a template whose runtime moved, which is replaced.
+else here deletes or renames a simulator, except a template whose runtime moved or whose warm-up failed,
+which is replaced.
 Reaping shuts down a member, or a template, left booted past its time, such as by a killed warm-up
 (offload_host.reap).
 Checking a UDID refuses any device outside the pool, such as one of Xcode's default devices, which a
@@ -64,6 +68,12 @@ KIND_PRUNE_AFTER = timedelta(days=7)
 DEVICE_TYPE = "com.apple.CoreSimulator.SimDeviceType."
 RUNTIME = "com.apple.CoreSimulator.SimRuntime."
 NUMBER = re.compile(r"(?P<label>.+) (?P<number>[1-9][0-9]*)")
+# A template whose warm-up failed is out of use and remade, since it gives failures the code did not cause
+# (owner's decision on vocaro/queuekeeper#203, 2026-11-27). A runtime that never warms on this Mac would
+# otherwise cost every take a warm-up: after REMAKE_LIMIT failed warm-ups in a row on the same installed builds
+# a take or creation remakes it only once REMAKE_PAUSE has passed since the last, and says it needs remaking;
+# `qk simulator-pool template` remakes it whenever asked.
+REMAKE_LIMIT, REMAKE_PAUSE = 3, timedelta(hours=24)
 # A kind's warmed template, `POOL LABEL template (RUNTIME)`, which NUMBER never matches.
 TEMPLATE = re.compile(r"(?P<label>.+) template \((?P<runtime>[^()]+)\)")
 PRESERVATION = "Synthetic test state; the next holder may erase this pool member"
@@ -254,9 +264,41 @@ def template_settled(entry):
     return False, "its voices did not settle" + (f": {voices['outcome']}" if voices.get("outcome") else "")
 
 
+def warm_failure(details):
+    """Why the warm-up a template's record details describe failed, or None when every step passed: VoiceOver
+    spoke with its sound cues off and the system's voices settled. A record from before voiceOverWarmed was
+    written says whether VoiceOver spoke in its voiceOver."""
+    details = details or {}
+    settled, why = template_settled({"template": details})
+    if not settled: return why
+    spoke = details.get("voiceOverWarmed")
+    if spoke is None: spoke = str(details.get("voiceOver") or "").startswith("spoke")
+    if not spoke: return f"its VoiceOver was not warmed: {details.get('voiceOver') or 'nothing was recorded of it'}"
+    return None
+
+
+def remake_pause(entry, builds, now):
+    """When a take or creation may next remake the template, if its failed warm-ups in a row on these installed
+    builds reached REMAKE_LIMIT and the last is within REMAKE_PAUSE, else None (REMAKE_LIMIT)."""
+    failures = (entry or {}).get("warmFailures") or {}
+    if failures.get("installedBuilds") != builds or failures.get("count", 0) < REMAKE_LIMIT: return None
+    last = instant(failures.get("lastAt"))
+    if last is None or now - last >= REMAKE_PAUSE: return None
+    return last + REMAKE_PAUSE
+
+
+def out_of_use(entry):
+    """What the template's record entry says of its failed warm-ups in a row, for `list`, `check` and
+    `qk disk`, or None when its last warm-up passed or none failed."""
+    failures = (entry or {}).get("warmFailures") or {}
+    if not failures.get("count"): return None
+    return (f"out of use: {failures['count']} failed warm-up{'s' if failures['count'] != 1 else ''} in a row, the last "
+            f"at {failures.get('lastAt')}: {failures.get('why')}")
+
+
 def template_current(template, entry, builds):
-    """(True, why) when the pool may clone new members from the template, else (False, why). A current
-    template whose voices did not settle is cloned from, but never copied into a member (template_settled)."""
+    """(True, why) when the pool may clone new members from the template or copy it into a taken one, else
+    (False, why). A template whose warm-up failed any step (warm_failure) is never either."""
     details = (entry or {}).get("template") or {}
     if not template.available:
         return False, "its runtime is no longer installed"
@@ -278,6 +320,9 @@ def template_current(template, entry, builds):
     if builds is not None and details.get("installedBuilds") != builds:
         return False, (f"the runtime moved: warmed on {details.get('runtimeBuild')} among builds "
                        f"{', '.join(details.get('installedBuilds') or []) or 'none'}, now {', '.join(builds) or 'none'}")
+    failed = warm_failure(details)
+    if failed:
+        return False, f"its warm-up failed, so it is out of use: {failed}"
     return True, (f"warmed on runtime build {details.get('runtimeBuild')} at {details.get('warmedAt')}: "
                   f"{details.get('voiceOver')}; voices: {template_settled(entry)[1]}")
 
@@ -505,6 +550,8 @@ class Pool:
         self.hold = hold
         self.alone = alone
         self.hold_log = hold_log
+        # The templates a take has warmed, while one runs: it warms each at most once (template's bounded).
+        self._warmed = None
 
     def log_hold(self, event, key, entry, *, after, ended=None, **more):
         """Log one event of a member's take hold, entry its record entry before the event (offload_host.hold_line);
@@ -533,9 +580,12 @@ class Pool:
                       if str(entry.get("udid", "")).upper() == udid), None)
         if entry is None:
             raise RuntimeError(f"simctl lists no simulator {udid}")
+        template = next((template for template in templates(self.name, listing) if template.udid == udid), None)
+        failed = out_of_use(self.record.entry(template.name)) if template is not None else None
         kind = "one of Xcode's default devices" if udid in (default_devices() if defaults is None else defaults) \
             else "the pool's warmed template, which is only cloned, never tested on, and a device" \
-            if any(template.udid == udid for template in templates(self.name, listing)) else "a device"
+            + (f" {failed} until the pool remakes it," if failed else "") \
+            if template is not None else "a device"
         raise RuntimeError(f"{entry.get('name')} ({udid}) is {kind} outside the {self.name} simulator pool: take a "
                            "member with `qk simulator-pool take --device TYPE --runtime RUNTIME` and pass its UDID")
 
@@ -612,20 +662,21 @@ class Pool:
 
     def template(self, device_type, runtime, label, purpose, *, boot_timeout=warmed.TAKE_BOOT,
                  voiceover_limit=warmed.TAKE_VOICEOVER_LIMIT, voices_limit=warmed.TAKE_VOICES_LIMIT,
-                 require_voiceover=False, settled=False, refresh=False, wait=TEMPLATE_WAIT, use="clone"):
+                 bounded=True, refresh=False, wait=TEMPLATE_WAIT, use="clone"):
         """(lease, None): a held, shut-down, current template of the kind, to clone a new member from or to
         copy into a taken one, warmed first when the kind has none current, as when its runtime's installed
-        builds changed or it predates settled voices; else (None, why), why None only while the pool keeps
-        no templates. The caller releases the lease once it has cloned or copied.
+        builds changed, it predates settled voices or its warm-up failed a step; else (None, why), why None
+        only while the pool keeps no templates. The caller releases the lease once it has cloned or copied.
 
-        settled asks for a template whose voices settled, as a reset does: a current one whose voices did
-        not settle within its limits is left as it is, for `qk simulator-pool template --refresh`, and why
-        says so. refresh replaces the template whatever its state. While another session holds the template,
-        as for its own copy or clone of a few seconds, this waits up to wait seconds. A take warms within the
-        shorter template.TAKE_* limits, so that a kind's first creation or reset does not eat a lane's time;
-        require_voiceover, as `qk simulator-pool template` passes it with the full limits, also replaces a
-        current template whose VoiceOver stayed cold or whose voices did not settle. use, clone or copy,
-        names what the caller does with the template, for the reasons."""
+        A template whose warm-up fails is never handed back: its record's warmFailures counts the failures in
+        a row on the runtime's installed builds, and the next call remakes it. bounded, as a take's calls are,
+        remakes it once a take at most, and after REMAKE_LIMIT failures in a row only once REMAKE_PAUSE has
+        passed (remake_pause); why then says it needs remaking. `qk simulator-pool template` passes bounded
+        False with the full limits, and refresh replaces the template whatever its state. While another
+        session holds the template, as for its own copy or clone of a few seconds, this waits up to wait
+        seconds. A take warms within the shorter template.TAKE_* limits, so that a kind's first creation or
+        reset does not eat a lane's time. use, clone or copy, names what the caller does with the template,
+        for the reasons."""
         if self.warm is None: return None, None
         used = {"clone": "cloned", "copy": "copied"}[use]
         device_type, runtime = qualified(DEVICE_TYPE, device_type), qualified(RUNTIME, runtime)
@@ -651,14 +702,18 @@ class Pool:
         current_now, why = template_current(existing, current, builds) if existing is not None else (False, None)
         if refresh and existing is not None:
             current_now, why = False, "qk simulator-pool template --refresh asked for a new one"
-        if current_now and require_voiceover and not ((current or {}).get("template") or {}).get("voiceOverWarmed"):
-            current_now, why = False, "its VoiceOver was not warmed"
-        if current_now and require_voiceover and not template_settled(current)[0]:
-            current_now, why = False, template_settled(current)[1]
-        if current_now and settled and not template_settled(current)[0]:
-            return None, f"{key}: {template_settled(current)[1]}; {self.refresh_hint(device_type, runtime)}"
+        if not current_now and bounded and not refresh:
+            if self._warmed is not None and key in self._warmed:
+                return None, (f"{key}: {why or 'its warm-up failed'}; it was warmed once in this take already, and the "
+                              "next take remakes it")
+            until = remake_pause(current, builds, self.clock())
+            if until is not None:
+                return None, (f"{key} needs remaking, {out_of_use(current)}; no take remakes it before "
+                              f"{until.isoformat(timespec='minutes')}: {self.refresh_hint(device_type, runtime)}")
         usable = existing is not None and existing.kind == (device_type, runtime) and current_now
         details = {"template": current["template"]} if usable else {}
+        # The count of failed warm-ups in a row stays with the name across reservations.
+        if (current or {}).get("warmFailures"): details["warmFailures"] = current["warmFailures"]
         try:
             revision = self._reserve(key, (f"{'Copy' if use == 'copy' else 'Clone'} the template for {purpose}" if usable
                                            else f"Warm the template for {purpose}"),
@@ -714,15 +769,35 @@ class Pool:
                         json.dump({"version": 1, "pool": self.name, "udid": udid, "name": key, "runtime": runtime,
                                    "holder": entry[device_record.HOLDER]}, stream)
 
+        def failed(lease, reason):
+            """Record a failed warm-up of the held template and say what follows: the next take remakes it, or
+            after REMAKE_LIMIT failures in a row it needs remaking."""
+            before = (self.record.entry(key) or {}).get("warmFailures") or {}
+            count = before.get("count", 0) + 1 if before.get("installedBuilds") == builds else 1
+            failures = {"count": count, "installedBuilds": builds, "lastAt": self.clock().isoformat(),
+                        "udid": lease.udid, "why": reason}
+            lease.revision = self.record.update(key, owner=self.owner, revision=lease.revision,
+                                                warmFailures=failures)["revision"]
+            if count < REMAKE_LIMIT:
+                then = f"the next take or creation remakes it ({count} of {REMAKE_LIMIT} failed warm-ups in a row)"
+            else:
+                until = remake_pause({"warmFailures": failures}, builds, self.clock())
+                then = (f"it needs remaking: {count} warm-ups failed in a row, so no take remakes it before "
+                        f"{until.isoformat(timespec='minutes')}; {self.refresh_hint(device_type, runtime)}")
+            self.log(f"OUT OF USE the template {key} ({lease.udid}): {reason}; {then}")
+            return then
+
         def warm(lease):
+            if self._warmed is not None: self._warmed.add(key)
             self.log(f"WARMING the template {key} ({lease.udid}): boot, VoiceOver until it speaks, then the system's "
                      "voices twice with a reboot between")
             try:
                 return self.warm(lease.udid, runtime, simctl=self.run, boot_timeout=boot_timeout,
                                  voiceover_limit=voiceover_limit, voices_limit=voices_limit)
             except warmed.WarmFailed as error:
+                then = failed(lease, f"it was not warmed: {error}")
                 self.release(lease, outcome=f"Not warmed: {error}")
-                raise device_record.Unprepared(f"{key} ({lease.udid}) was not warmed: {error}") from None
+                raise device_record.Unprepared(f"{key} ({lease.udid}) was not warmed: {error}; {then}") from None
 
         def ready(lease, warmth):
             udid = lease.udid
@@ -738,18 +813,15 @@ class Pool:
             clonable, reason = template_current(Template(key, udid, label, device_type, runtime, "Shutdown", data=data),
                                                 self.record.entry(key), builds)
             if not clonable:
-                # Never cloned: the next creation replaces it.
-                self.release(lease, outcome=f"Warmed, not cloned: {reason}", shutdown=False)
-                raise device_record.Unprepared(f"{key} ({udid}) is not {used}: {reason}")
+                # Never cloned or copied: the next creation or take replaces it, within its bound.
+                then = failed(lease, reason)
+                self.release(lease, outcome=f"Warmed, not {used}: {reason}", shutdown=False)
+                raise device_record.Unprepared(f"{key} ({udid}) is not {used}: {reason}; {then}")
             voices = warmth.get("voices") or {}
+            lease.revision = self.record.update(key, owner=self.owner, revision=lease.revision,
+                                                warmFailures=None)["revision"]
             self.log(f"WARMED the template {key} ({udid}) on runtime build {warmth['runtimeBuild']}: "
                      f"{warmth.get('voiceOver')}; voices: {voices.get('outcome')}")
-            if settled and not voices.get("settled"):
-                # A reset needs settled voices. The template keeps its first boot and VoiceOver's start, so new
-                # members are cloned from it; the command, with the full limits, replaces it.
-                self.release(lease, outcome=f"Warmed, voices not settled: {voices.get('outcome')}", shutdown=False)
-                raise device_record.Unprepared(f"{key} ({udid}): {template_settled(self.record.entry(key))[1]} "
-                                               f"within the take's limits; {self.refresh_hint(device_type, runtime)}")
             return lease, None
 
         def abandon(lease, error):
@@ -863,10 +935,19 @@ class Pool:
                                     release_by=self._release_by(), details=details)
         return entry["revision"]
 
-    def take(self, device_type, runtime, *, purpose, label=None, preservation=None, prune=True, keep_state=False,
-             erase=False, exclude=()):
+    def take(self, device_type, runtime, **options):
+        """_take's member, warming each template at most once (template's bounded)."""
+        outer = self._warmed
+        if outer is None: self._warmed = set()
+        try:
+            return self._take(device_type, runtime, **options)
+        finally:
+            self._warmed = outer
+
+    def _take(self, device_type, runtime, *, purpose, label=None, preservation=None, prune=True, keep_state=False,
+              erase=False, exclude=()):
         """A free member of the kind, reserved and reset from the kind's warmed template, or erased when no
-        settled template can be copied, or a new one; the caller boots it.
+        template whose warm-up passed can be copied, or a new one; the caller boots it.
 
         erase erases the member as before this reset existed, for a lane that wants pristine data, and the
         record says it was asked for. keep_state reserves the member without resetting or erasing it, for a
@@ -900,8 +981,7 @@ class Pool:
             if erase:
                 erased, why = self.run("erase", lease.udid), ERASE_ASKED
             elif not keep_state:
-                source, why = self.template(device_type, runtime, reserved[lease.udid].label, purpose,
-                                            settled=True, use="copy")
+                source, why = self.template(device_type, runtime, reserved[lease.udid].label, purpose, use="copy")
                 done = False
                 if source is not None:
                     try:
@@ -1411,7 +1491,7 @@ def main(argv, project=None):
     def action(name, **options): return scoping(commands.add_parser(name, **options), argparse.SUPPRESS)
     action("list", help="every member, its state and whether pruning may delete it")
     take = action("take", help="reserve, reset from the kind's template (or erase: --erase, or when "
-                               "no settled template can be copied; neither with --keep-state) and boot a free "
+                               "no warmed template can be copied; neither with --keep-state) and boot a free "
                                "member of a kind, or create the next; prints its UDID")
     take.add_argument("--device", required=True, metavar="TYPE", help="a device type, such as iPhone-17-Pro")
     take.add_argument("--runtime", required=True, help="a runtime, such as iOS-27-1")
@@ -1500,7 +1580,9 @@ def main(argv, project=None):
                       f"{'prunable' if allowed else 'kept'}: {reason}; {origin(record.get(member.name))}")
             for found, current, reason in pool.templates(listing):
                 kind = "template" if current else "stale template" + (", prunable" if not found.available else "")
-                print(f"{found.name}  {found.udid}  {found.runtime.rsplit('.', 1)[-1]}  {found.state}  {kind}: {reason}")
+                failed = out_of_use(record.get(found.name))
+                print(f"{found.name}  {found.udid}  {found.runtime.rsplit('.', 1)[-1]}  {found.state}  {kind}: {reason}"
+                      + (f"; {failed}" if failed else ""))
         elif args.action == "template":
             for number in (signal.SIGTERM, signal.SIGHUP):
                 signal.signal(number, stopped)
@@ -1508,7 +1590,7 @@ def main(argv, project=None):
             lease, why = pool.template(device_type, runtime, args.label or pool.kind_label(device_type, runtime),
                                        "qk simulator-pool template", boot_timeout=600,
                                        voiceover_limit=warmed.VOICEOVER_LIMIT, voices_limit=warmed.VOICES_LIMIT,
-                                       require_voiceover=True, refresh=args.refresh, use="copy")
+                                       bounded=False, refresh=args.refresh, use="copy")
             if lease is None:
                 print(f"queuekeeper simulator-pool: no current template of {args.device} on {args.runtime}"
                       + (f": {why}" if why else "") + "; members are erased and new ones created instead",

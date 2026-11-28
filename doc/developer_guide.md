@@ -2003,8 +2003,14 @@ Code: `queuekeeper_apple/simulators/pool.py` and `template.py`.
   a database in memory, which took 285 to 344 seconds per `xcodebuild` clone at rest and over 1,900 under
   load, leaving gates without a verdict.
 - **Limits.** A take warms within 300 seconds for the boot, 180 for VoiceOver and 300 per voice use; `qk
-  simulator-pool template` uses 600 and 900. A template whose VoiceOver stayed cold is still cloned; one
-  whose voices did not settle is cloned but never copied into a member.
+  simulator-pool template` uses 600 and 900.
+- **A failed warm-up** (the boot, VoiceOver silent, sound cues not off, or voices unsettled: `warm_failure`)
+  takes the template out of use: `template_current` refuses it, so it is neither cloned nor copied
+  (owner's decision on #203, 2026-11-27). The record entry's `warmFailures` counts failures in a row on the
+  same installed builds and is carried across reservations; a pass clears it. A take warms each template
+  at most once (`Pool._warmed`), and after `REMAKE_LIMIT` (3) failures takes and creations stop remaking
+  it until `REMAKE_PAUSE` (24 hours) after the last; `qk simulator-pool template` is not bounded.
+  `out_of_use` words the count for `list`, `check` and `qk disk`.
 - **Currency.** A template is current while simctl lists the same installed builds of its runtime as when
   it was warmed and its record holds its voices. Otherwise, or if it never finished warming, or its
   VoiceOver could not be confirmed off, the next take replaces it. The pool also reads

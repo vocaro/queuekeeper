@@ -1585,7 +1585,7 @@ class PoolTests(unittest.TestCase):
         self.assertNotEqual(self.simctl.origin(free).split()[0], "warmed")
         entry = devices.Record(self.path).entry(template)
         self.assertEqual((entry["state"], entry["template"]["voiceOverOff"]), ("released", True))
-        self.assertIn(f"Warmed, not cloned: {reason}", entry["run"])
+        self.assertIn(f"Warmed, not copied: {reason}", entry["run"])
         self.assertEqual([(current, why) for _, current, why in pool.templates()], [(False, reason)])
         self.assertTrue(pool.release(lease, outcome="done"))
         # The next take replaces it, and a template saved with VoiceOver off is copied.
@@ -1672,8 +1672,8 @@ class PoolTests(unittest.TestCase):
                                         simulator_pool.warmed.TAKE_VOICES_LIMIT)])
         self.assertEqual((simulator_pool.warmed.TAKE_BOOT, simulator_pool.warmed.TAKE_VOICEOVER_LIMIT,
                           simulator_pool.warmed.TAKE_VOICES_LIMIT), (300, 180, 300))
-        # VoiceOver stayed cold within the take's limit, yet the template has had its first boot: it is cloned.
-        self.assertEqual(lease.cloned, template)
+        # VoiceOver stayed cold within the take's limit: the warm-up failed, so the member is created, not cloned.
+        self.assertEqual((lease.cloned, self.simctl.created("clone")), (None, []))
         self.assertEqual(devices.Record(self.path).entry(template)["template"]["voiceOverWarmed"], False)
         self.assertTrue(pool.release(lease, outcome="done"))
         cold = devices.Record(self.path).entry(template)["device"]
@@ -1892,7 +1892,8 @@ class PoolTests(unittest.TestCase):
         lease = pool.take(DUO, RUNTIME, purpose="Tests")
         self.assertEqual((lease.reset, self.simctl.origin(free)), (None, "erased"))
         self.assertRegex(devices.Record(self.path).entry("Project Duo 1")["erasedBecause"],
-                         rf"^{re.escape(template)} \(\S+\) was not warmed: the boot did not finish within 300 s$")
+                         rf"^{re.escape(template)} \(\S+\) was not warmed: the boot did not finish within 300 s; the "
+                         rf"next take or creation remakes it \(1 of 3 failed warm-ups in a row\)$")
         self.assertTrue(pool.release(lease, outcome="done"))
         # No readable runtime catalog: erased, saying so in the reset's words.
         self.simctl.runtimes, kept = {}, self.simctl.runtimes
@@ -1951,51 +1952,128 @@ class PoolTests(unittest.TestCase):
         for held in (first, lease, third):
             self.assertTrue(pool.release(held, outcome="done"))
 
-    def test_a_template_whose_voices_did_not_settle_is_cloned_from_but_never_copied_until_refreshed(self):
+    def test_a_template_whose_voices_did_not_settle_is_never_cloned_or_copied_and_the_next_take_remakes_it(self):
+        # The owner's decision on vocaro/queuekeeper#203: a template that fails its warm-up is out of use.
         warm = Warm(settled=False)
         pool = self.make("me", warm=warm)
         free = self.simctl.add("Project Duo 1")
         template = "Project Duo template (iOS-27-1)"
         lease = pool.take(DUO, RUNTIME, purpose="Tests")
-        # Warmed within the take, VoiceOver spoke, the voices did not settle: kept, but the member is erased.
+        # Warmed within the take, VoiceOver spoke, the voices did not settle: the member is erased, not copied.
         self.assertEqual((lease.reset, self.simctl.origin(free), len(warm.calls)), (None, "erased", 1))
-        hint = "refresh it with `qk simulator-pool template --device iPhone-Duo --runtime iOS-27-1 --refresh`"
         why = devices.Record(self.path).entry("Project Duo 1")["erasedBecause"]
-        self.assertIn("its voices did not settle: the first use gave no answer: no answer in 300 s within the take's limits; "
-                      + hint, why)
+        self.assertIn("is not copied: its warm-up failed, so it is out of use: its voices did not settle: the first use "
+                      "gave no answer: no answer in 300 s; the next take or creation remakes it (1 of 3 failed warm-ups "
+                      "in a row)", why)
+        entry = devices.Record(self.path).entry(template)
+        self.assertEqual((entry["state"], entry["warmFailures"]["count"]), ("released", 1))
         (found, current, reason), = pool.templates()
-        self.assertEqual((found.name, current), (template, True))
-        self.assertIn("voices: its voices did not settle: the first use gave no answer", reason)
-        self.assertTrue(pool.release(lease, outcome="done"))
-        # The next take does not warm it again and says the same; a new member is still cloned from it.
-        again = pool.take(DUO, RUNTIME, purpose="Tests")
-        self.assertEqual((again.reset, len(warm.calls)), (None, 1))
-        self.assertEqual(devices.Record(self.path).entry("Project Duo 1")["erasedBecause"],
-                         f"{template}: its voices did not settle: the first use gave no answer: no answer in 300 s; {hint}")
-        cloned = pool.create(DUO, RUNTIME, purpose="Tests")
-        self.assertEqual((cloned.cloned, len(warm.calls)), (template, 1))
-        for held in (again, cloned): self.assertTrue(pool.release(held, outcome="done"))
-        # The command replaces it, with the full limits, and the next take copies the replacement.
-        old = devices.Record(self.path).entry(template)["device"]
-        warm.settled = True
-        status, output, error = self.command(warm, "template", "--device", "iPhone-Duo", "--runtime", "iOS-27-1")
+        self.assertEqual((found.name, current), (template, False))
+        self.assertIn("its warm-up failed, so it is out of use: its voices did not settle", reason)
+        # A new member made in the same take's way is created, never cloned from the failed template, and the
+        # creation remakes it first: a second failure in a row.
+        first = entry["device"]
+        created = pool.create(DUO, RUNTIME, purpose="Tests")
+        self.assertEqual((created.cloned, self.simctl.created("clone"), len(warm.calls)), (None, [], 2))
+        self.assertEqual(self.simctl.deleted(), [first])
+        self.assertEqual(devices.Record(self.path).entry(template)["warmFailures"]["count"], 2)
+        self.assertTrue(any(line.startswith(f"REPLACED the template {template} ({first}): its warm-up failed")
+                            for line in self.log), self.log)
+        for held in (lease, created): self.assertTrue(pool.release(held, outcome="done"))
+        # The `list` command and `check` of the template's UDID say it is out of use and why.
+        status, output, error = self.command(warm, "list")
         self.assertEqual(status, 0, error)
-        self.assertEqual(self.simctl.deleted(), [old])
-        self.assertEqual(warm.limits[-1], (600, simulator_pool.warmed.VOICEOVER_LIMIT, simulator_pool.warmed.VOICES_LIMIT))
-        self.assertIn("; voices: settled: 180 voices listed 57.0 s into the first use and 24.0 s into the second", output)
-        new = devices.Record(self.path).entry(template)["device"]
+        self.assertIn("stale template: its warm-up failed, so it is out of use", output)
+        self.assertIn("; out of use: 2 failed warm-ups in a row, the last at", output)
+        second = devices.Record(self.path).entry(template)["device"]
+        status, output, error = self.command(warm, "check", second)
+        self.assertEqual(status, 1)
+        self.assertIn("the pool's warmed template, which is only cloned, never tested on, and a device out of use: 2 "
+                      "failed warm-ups in a row", error)
+        # Once a remake settles, the next take copies it and the count of failures goes.
+        warm.settled = True
         reset = pool.take(DUO, RUNTIME, purpose="Tests")
+        new = devices.Record(self.path).entry(template)["device"]
         self.assertEqual((reset.udid, reset.reset, self.simctl.origin(free)), (free, template, f"warmed {new}"))
+        self.assertEqual(self.simctl.deleted(), [first, second])
+        self.assertIsNone(devices.Record(self.path).entry(template).get("warmFailures"))
+        self.assertIsNone(simulator_pool.out_of_use(devices.Record(self.path).entry(template)))
         self.assertTrue(pool.release(reset, outcome="done"))
-        # Settled and current, the command leaves it alone, unless asked to refresh it.
+        # Settled and current, the next take copies it again without a warm-up, and so does the command.
+        again = pool.take(DUO, RUNTIME, purpose="Tests")
+        self.assertEqual((again.reset, len(warm.calls)), (template, 3))
+        self.assertTrue(pool.release(again, outcome="done"))
         self.assertEqual(self.command(warm, "template", "--device", "iPhone-Duo", "--runtime", "iOS-27-1")[0], 0)
-        self.assertEqual((len(warm.calls), self.simctl.deleted()), (2, [old]))
+        self.assertEqual((len(warm.calls), self.simctl.deleted()), (3, [first, second]))
         status, output, error = self.command(warm, "template", "--device", "iPhone-Duo", "--runtime", "iOS-27-1", "--refresh")
         self.assertEqual(status, 0, error)
-        self.assertEqual((len(warm.calls), self.simctl.deleted()), (3, [old, new]))
+        self.assertEqual((len(warm.calls), self.simctl.deleted()), (4, [first, second, new]))
         self.assertIn(f"REPLACED the template {template} ({new}): qk simulator-pool template --refresh asked for a new one",
                       error)
         self.assertEqual(devices.Record(self.path).entry(template)["state"], "released")
+
+    def test_a_take_remakes_a_failed_template_once_and_stops_after_three_failures_in_a_row(self):
+        warm = Warm(warmed=False)
+        clock = [NOW]
+        pool = simulator_pool.Pool("Project", owner="me", record=devices.Record(self.path), run=self.simctl,
+                                   log=self.log.append, clock=lambda: clock[0], warm=warm, sleep=self.sleeps.append)
+        free = self.simctl.add("Project Duo 1")
+        template = "Project Duo template (iOS-27-1)"
+        hint = "refresh it with `qk simulator-pool template --device iPhone-Duo --runtime iOS-27-1 --refresh`"
+        # Each take warms the failed template once, even when its reset and its creation both want one.
+        held = [pool.take(DUO, RUNTIME, purpose="Tests")]
+        self.assertEqual((held[0].udid, len(warm.calls)), (free, 1))
+        held.append(pool.take(DUO, RUNTIME, purpose="Tests"))
+        self.assertEqual((held[1].cloned, len(warm.calls)), (None, 2))
+        for lease in held: self.assertTrue(pool.release(lease, outcome="done"))
+        lease = pool.take(DUO, RUNTIME, purpose="Tests")
+        self.assertEqual(len(warm.calls), 3)
+        failures = devices.Record(self.path).entry(template)["warmFailures"]
+        self.assertEqual((failures["count"], failures["installedBuilds"]), (3, ["24B8117"]))
+        self.assertIn("its VoiceOver was not warmed: silent for 180 s, so it is not warmed", failures["why"])
+        self.assertIn(f"it needs remaking: 3 warm-ups failed in a row, so no take remakes it before "
+                      f"{(NOW + simulator_pool.REMAKE_PAUSE).isoformat(timespec='minutes')}; {hint}",
+                      devices.Record(self.path).entry("Project Duo 1")["erasedBecause"])
+        self.assertTrue(pool.release(lease, outcome="done"))
+        # The limit reached, takes erase and create without warming, and say it needs remaking.
+        lease = pool.take(DUO, RUNTIME, purpose="Tests")
+        self.assertEqual((lease.reset, len(warm.calls)), (None, 3))
+        self.assertIn(f"{template} needs remaking, out of use: 3 failed warm-ups in a row",
+                      devices.Record(self.path).entry("Project Duo 1")["erasedBecause"])
+        created = pool.create(DUO, RUNTIME, purpose="Tests")
+        self.assertEqual((created.cloned, len(warm.calls)), (None, 3))
+        for held in (lease, created): self.assertTrue(pool.release(held, outcome="done"))
+        # The command remakes it whenever asked, and a pause past REMAKE_PAUSE lets a take try again.
+        status, _, error = self.command(warm, "template", "--device", "iPhone-Duo", "--runtime", "iOS-27-1")
+        self.assertEqual((status, len(warm.calls)), (1, 4))
+        self.assertIn("no current template of iPhone-Duo on iOS-27-1", error)
+        clock[0] = NOW + simulator_pool.REMAKE_PAUSE + timedelta(minutes=1)
+        warm.warmed = True
+        lease = pool.take(DUO, RUNTIME, purpose="Tests")
+        self.assertEqual((lease.reset, len(warm.calls)), (template, 5))
+        self.assertIsNone(devices.Record(self.path).entry(template).get("warmFailures"))
+        self.assertTrue(pool.release(lease, outcome="done"))
+        # New installed builds start the count again.
+        warm.warmed = False
+        self.simctl.runtimes[RUNTIME] = ["24B8117", "24B9000"]
+        lease = pool.take(DUO, RUNTIME, purpose="Tests")
+        self.assertEqual(devices.Record(self.path).entry(template)["warmFailures"]["count"], 1)
+        self.assertTrue(pool.release(lease, outcome="done"))
+
+    def test_a_template_that_passes_every_warming_step_is_in_use(self):
+        self.assertIsNone(simulator_pool.warm_failure({"voiceOver": "spoke 50.0 s after it was switched on",
+                                                       "voiceOverWarmed": True, "voices": {"settled": True}}))
+        failures = {"silent": {"voiceOver": "silent for 600 s, so it is not warmed", "voiceOverWarmed": False,
+                               "voices": {"settled": True}},
+                    "unsettled": {"voiceOver": "spoke 50.0 s", "voiceOverWarmed": True,
+                                  "voices": {"settled": False, "outcome": "the second use, after a reboot, gave no answer"}},
+                    "cues": {"voiceOver": "not started: VoiceOver's sound cues could not be switched off",
+                             "voices": {"settled": True}}}
+        self.assertEqual({name: bool(simulator_pool.warm_failure(details)) for name, details in failures.items()},
+                         {"silent": True, "unsettled": True, "cues": True})
+        # A record from before voiceOverWarmed was written passes on its words alone.
+        self.assertIsNone(simulator_pool.warm_failure({"voiceOver": "spoke 12.0 s after it was switched on",
+                                                       "voices": {"settled": True}}))
 
     def test_a_template_made_before_settled_voices_is_remade_at_the_next_take(self):
         warm = Warm()
