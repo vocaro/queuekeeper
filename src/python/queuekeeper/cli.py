@@ -814,11 +814,8 @@ SCRIPT_RUNNERS = re.compile(r"(python|pypy)(\d+(\.\d+)*)?|(ba|z|da|k)?sh")
 
 # Where a run of a lane on this Mac keeps its log, receipt and results while another run of that lane from the same
 # checkout holds .build/queuekeeper/LANE: .build/queuekeeper/RUNS/LANE/TIME-PID/, as each dispatch keeps its own
-# (remote.DISPATCHES); and how many of them each lane keeps.
+# (remote.DISPATCHES). Which stay is decided by state, never by age or count (superseded, vocaro-engineering#559).
 RUNS = ".runs"
-# Eight: two for each of remote.CHECKOUTS, as remote dispatches once kept, before they were kept by state
-# (vocaro-engineering#559).
-RUNS_KEPT = 2 * remote.CHECKOUTS
 
 
 def lane_directory(stack, root, lane):
@@ -827,8 +824,8 @@ def lane_directory(stack, root, lane):
     lane from this checkout holds it keeps a directory of its own, named for its start and its process as a
     dispatch's is, and says so, and its summary names that directory's log and receipt (lane_report). Two runs of one
     lane here from one checkout shared the lane's: the second emptied the first's results and wrote over its log, so
-    that the first read the second's tests as its own (vocaro/queuekeeper#9). Each lane keeps its newest RUNS_KEPT
-    such directories and any whose process still runs, and each one removed is named."""
+    that the first read the second's tests as its own (vocaro/queuekeeper#9). Each such directory that superseded
+    says is done with goes, named as it goes; no age or count decides it."""
     base = Path(root) / ".build/queuekeeper"
     runs = base / RUNS / lane
     runs.mkdir(parents=True, exist_ok=True)
@@ -842,13 +839,34 @@ def lane_directory(stack, root, lane):
     own.mkdir(exist_ok=True)
     print(f"queuekeeper: another run of {lane} from this checkout is running on this Mac, so this run keeps its log, "
           f"receipt and results in {own}, not {base / lane}", file=sys.stderr, flush=True)
-    for old in sorted(path for path in runs.iterdir() if path.is_dir())[:-RUNS_KEPT]:
-        process = old.name.rpartition("-")[2]
-        if process.isdigit() and lane_wait.alive(int(process)): continue
+    later = [path for path in sorted(runs.iterdir()) if path.is_dir() and path != own]
+    for index, old in enumerate(later):
+        if not superseded(old, later[index + 1:]): continue
         shutil.rmtree(old, ignore_errors=True)
-        print(f"queuekeeper: removed {old}, each lane keeping its newest {RUNS_KEPT} runs beside another", file=sys.stderr,
+        print(f"queuekeeper: removed {old}: it passed, and a later run of {lane} has finished since", file=sys.stderr,
               flush=True)
     return own
+
+
+def run_ended(run):
+    """The receipt of a run's directory under RUNS when the process its name ends with has ended and the receipt, which
+    says how the run concluded, can be read; otherwise None."""
+    process = run.name[17:] if run.name[16:17] == "-" else ""
+    if not process.isdigit() or lane_wait.alive(int(process)): return None
+    try: receipt = json.loads((run / "source.json").read_text())
+    except (OSError, ValueError): return None
+    return receipt if isinstance(receipt, dict) and "outcome" in receipt else None
+
+
+def superseded(run, later):
+    """Whether a run's directory under RUNS may go, by its state alone: its receipt says it passed, its process has
+    ended, so that nothing still writes or reads it (a run's summary reads its own), and a run of the lane after it, one
+    of later, has finished too. A run that failed, was unmeasured, never started or was lost with no receipt, and any
+    whose receipt cannot be read, stay until the worktree goes: they are what a session diagnoses
+    (vocaro-engineering#559)."""
+    receipt = run_ended(run)
+    if receipt is None or receipt.get("outcome") != "passed" or receipt.get("exitStatus") != 0: return False
+    return any(run_ended(path) is not None for path in later)
 
 
 def reap_here(root, inherited):

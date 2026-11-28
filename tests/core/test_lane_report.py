@@ -876,22 +876,47 @@ class Summary(unittest.TestCase):
         self.configure(lane=self.printing("Ran 1 test in 0.1s\n\nOK"))
         self.assertEqual(self.qk("lane")[1][-1], f"  receipt: {self.lane_dir / 'source.json'}")
 
-    def test_a_lane_keeps_its_newest_runs_beside_another_and_any_still_running(self):
+    def test_a_run_beside_another_goes_only_when_it_passed_and_a_later_run_has_finished(self):
         runs = self.root / ".build/queuekeeper" / cli.RUNS / "lane"
-        old = [runs / f"20200115T08000{number}Z-1" for number in range(cli.RUNS_KEPT + 1)]
-        running = runs / f"20200115T070000Z-{os.getpid()}"
-        for path in (*old, running): path.mkdir(parents=True)
+
+        def make(name, outcome=None, process=1, **fields):
+            path = runs / f"{name}-{process}"
+            path.mkdir(parents=True)
+            if outcome:
+                (path / "source.json").write_text(json.dumps({"outcome": outcome, "exitStatus": 0 if outcome == "passed" else 1, **fields}))
+            return path
+        # Nine passes, more than eight, each with a later finished run after it but the last.
+        passed = [make(f"20200115T0800{number:02d}Z", "passed") for number in range(9)]
+        failed = make("20200115T070000Z", "failed")
+        unmeasured = make("20200115T070001Z", "unmeasured")
+        unreadable = make("20200115T070002Z")
+        (unreadable / "source.json").write_text("{")
+        zero_but_failed = make("20200115T070003Z", "failed", exitStatus=0)
+        running = make("20200115T070004Z", "passed", process=os.getpid())
         stream = StringIO()
         with contextlib.ExitStack() as first, contextlib.ExitStack() as second, contextlib.redirect_stderr(stream):
             self.assertEqual(cli.lane_directory(first, self.root, "lane"), self.lane_dir)
             own = cli.lane_directory(second, self.root, "lane")
-            self.assertEqual((own.parent, own.name.rpartition("-")[2]), (runs, str(os.getpid())))
-        # The newest eight, its own among them, and the older one whose process, this one, still runs.
-        self.assertEqual(sorted(path for path in runs.iterdir() if path.is_dir()), sorted([running, *old[2:], own]))
+        # Every pass but the last finished one goes, whatever their number; nothing else does.
+        self.assertEqual(sorted(path for path in runs.iterdir() if path.is_dir()),
+                         sorted([failed, unmeasured, unreadable, zero_but_failed, running, passed[-1], own]))
         self.assertEqual(stream.getvalue().splitlines()[1:], [
-            f"queuekeeper: removed {path}, each lane keeping its newest {cli.RUNS_KEPT} runs beside another" for path in old[:2]])
+            f"queuekeeper: removed {path}: it passed, and a later run of lane has finished since" for path in passed[:-1]])
         # Released with the run that held it, the lane's directory is the next run's.
         with contextlib.ExitStack() as later: self.assertEqual(cli.lane_directory(later, self.root, "lane"), self.lane_dir)
+
+    def test_a_pass_stays_with_no_later_run_finished_or_while_its_process_runs(self):
+        runs = self.root / ".build/queuekeeper" / cli.RUNS / "lane"
+        done = runs / "20200115T080000Z-1"
+        alive = runs / f"20200115T070000Z-{os.getpid()}"
+        unfinished = runs / "20200115T090000Z-1"
+        for path in (done, alive, unfinished): path.mkdir(parents=True)
+        for path in (done, alive): (path / "source.json").write_text(json.dumps({"outcome": "passed", "exitStatus": 0}))
+        with contextlib.ExitStack() as first, contextlib.ExitStack() as second, contextlib.redirect_stderr(StringIO()):
+            cli.lane_directory(first, self.root, "lane")
+            cli.lane_directory(second, self.root, "lane")
+        # A run that is running keeps its directory, and a pass with no finished run after it.
+        self.assertTrue(done.is_dir() and alive.is_dir() and unfinished.is_dir())
 
     def test_a_summary_that_cannot_be_made_never_changes_the_status(self):
         self.configure(lane=self.printing(""))
