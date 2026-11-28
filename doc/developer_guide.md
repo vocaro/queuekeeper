@@ -1199,6 +1199,15 @@ Bonjour lists no Mac. A test that leaves a remote call unpatched fails the same 
 Fixtures map each plugin to its own checkout rather than rewriting every `path` to the
 toolkit's.
 
+### Tests never reach GitHub
+
+A `gh` stand-in also comes first on `PATH`: it exits 1 and says which test ran it and with what
+arguments (`host_isolation` sets `QUEUEKEEPER_CURRENT_TEST` around each test), so a test that
+forgets to stub `gh` fails at once instead of reaching GitHub as the owner. `GH_TOKEN`,
+`GITHUB_TOKEN` and their enterprise forms are cleared. A test that exercises `gh` puts its own fake
+first on `PATH`, as `test_pull_requests` and `test_release` do, or patches the call
+(vocaro/queuekeeper#405).
+
 ## Admission internals
 
 How admission, supervision and recovery work inside. The rules they serve, and why, are under

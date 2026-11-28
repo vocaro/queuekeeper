@@ -38,6 +38,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import unittest
 
 # The environment this process started with, before this module changed it: test_host_isolation reads what this module
 # leaves of it (vocaro/queuekeeper#46).
@@ -314,6 +315,30 @@ echo "tests/host_isolation.py: a test reaches no real Mac; fake this connection 
 echo "ssh: Could not resolve hostname ${1##*@}: nodename nor servname provided, or not known" >&2
 exit 255
 """)
+# A gh stand-in fails too, and says which test called it (vocaro/queuekeeper#405): a test that runs code calling gh and
+# forgets to stub it would otherwise reach GitHub as the owner, against whatever repository its origin names. The test's
+# id is in QUEUEKEEPER_CURRENT_TEST, which the TestCase.run wrapper below sets. A test of gh puts its own stand-in before
+# this one, and no token reaches a gh it starts.
+CURRENT_TEST = "QUEUEKEEPER_CURRENT_TEST"
+executable(STAND_INS / "gh", """#!/bin/sh
+# tests/host_isolation.py's gh: no test reaches GitHub (vocaro/queuekeeper#405).
+echo "tests/host_isolation.py: test ${QUEUEKEEPER_CURRENT_TEST:-<unknown>} ran the real gh ($*); stub it, or put a fake gh first on PATH (vocaro/queuekeeper#405)" >&2
+exit 1
+""")
+for variable in ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"): os.environ.pop(variable, None)
+_run = unittest.TestCase.run
+
+
+def _named_run(self, *arguments, **options):
+    kept = os.environ.get(CURRENT_TEST)
+    os.environ[CURRENT_TEST] = self.id()
+    try: return _run(self, *arguments, **options)
+    finally:
+        if kept is None: os.environ.pop(CURRENT_TEST, None)
+        else: os.environ[CURRENT_TEST] = kept
+
+
+unittest.TestCase.run = _named_run
 executable(STAND_INS / "dns-sd", "#!/bin/sh\n# tests/host_isolation.py's dns-sd: no Mac offers ssh (vocaro/queuekeeper#231).\nexit 0\n")
 os.environ["PATH"] = os.pathsep.join([str(STAND_INS), *[entry for entry in os.environ.get("PATH", "").split(os.pathsep)
                                                        if entry and entry != str(STAND_INS)]])

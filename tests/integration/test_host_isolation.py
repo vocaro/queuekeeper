@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -379,6 +380,36 @@ class HostIsolationTests(unittest.TestCase):
 
 TOOLKIT = TESTS.parent
 # A variable of the toolkit's, as its code names it.
+class GitHubReachTests(unittest.TestCase):
+    """No test reaches GitHub as the owner (vocaro/queuekeeper#405): an unstubbed gh fails and names the test."""
+
+    def test_an_unstubbed_gh_fails_and_names_the_test_that_ran_it(self):
+        ran = subprocess.run(["gh", "pr", "view", "7"], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                             timeout=stretched(30))
+        self.assertEqual(ran.returncode, 1)
+        self.assertIn(self.id(), ran.stderr)
+        self.assertIn("(pr view 7)", ran.stderr)
+        self.assertEqual(shutil.which("gh"), str(host_isolation.STAND_INS / "gh"))
+
+    def test_no_token_reaches_a_gh_a_test_starts(self):
+        for variable in ("GH_TOKEN", "GITHUB_TOKEN"): self.assertNotIn(variable, os.environ)
+
+
+class GitHubReachTests(unittest.TestCase):
+    """No test reaches GitHub as the owner (vocaro/queuekeeper#405): an unstubbed gh fails and names the test."""
+
+    def test_an_unstubbed_gh_fails_and_names_the_test_that_ran_it(self):
+        ran = subprocess.run(["gh", "pr", "view", "7"], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                             timeout=stretched(30))
+        self.assertEqual(ran.returncode, 1)
+        self.assertIn(self.id(), ran.stderr)
+        self.assertIn("(pr view 7)", ran.stderr)
+        self.assertEqual(shutil.which("gh"), str(host_isolation.STAND_INS / "gh"))
+
+    def test_no_token_reaches_a_gh_a_test_starts(self):
+        for variable in ("GH_TOKEN", "GITHUB_TOKEN"): self.assertNotIn(variable, os.environ)
+
+
 class FarmReachTests(unittest.TestCase):
     """No test reaches a real Mac by a name it gives its farm, on any Mac (vocaro/queuekeeper#231): every connection
     fails as one to a name that does not resolve, as on build-host, here and in any process a test starts."""
