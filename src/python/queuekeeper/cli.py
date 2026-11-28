@@ -18,7 +18,7 @@ import traceback
 
 from . import pins, __version__, agent_hooks, agent_setup, budgets, checkout, count_history, disk, docs, plugins, farm, gate_reuse, git_hooks, git_state, host_health, lane_coverage, lane_report, lane_results, lane_timing, lane_wait, merge_queue, offload_host, \
     direct_status, launcher_patch, parallel, pre_push, preflight, processes, remote, resources, run_progress, sandbox, shims, trial, wait_history
-from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, launched, plugins_of, lane_to_run, load, parse as parse_configuration, qk_said, \
+from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission as admission_of, release_shortfall, exclusive_refusal, launched, plugins_of, lane_to_run, load, parse as parse_configuration, qk_said, \
     source_identity, lane_devices, unrun_carry_checks, project_checkout, \
     project_siblings, renamed_plugins_key, self_lane_warnings, sibling_declarations, sibling_folders, sibling_links, sibling_revisions, start_free, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
@@ -1866,6 +1866,10 @@ def perform(argv, report):
         if args.action == "remote" and args.operation == "prune-results":
             return remote.prune_results_main(args.checkout or root, args.dry_run)
         config = working_configuration(root)
+        # A project that needs a newer Queuekeeper than this Mac's is told so by each command that reads it (#351);
+        # doctor gives it as a warning instead.
+        short = release_shortfall(config, __version__)
+        if short and args.action != "doctor": print(f"queuekeeper: {short}", file=sys.stderr, flush=True)
         if args.action in {"run", "admit"} or (args.action == "remote" and args.operation in {"run", "admit"}):
             for check in plugins.BEFORE_LANE: check(root, config)
         if args.action in plugins.PARSED_COMMANDS: return plugins.PARSED_COMMANDS[args.action][2](root, args, config)
@@ -1877,6 +1881,8 @@ def perform(argv, report):
             # The Queuekeeper this ran, when its main checkout is off main (#184) or has edits (#179).
             warnings = [off_main] if (off_main := git_state.off_main(TOOLKIT_ROOT)) else []
             if changed := git_state.shared_changes(TOOLKIT_ROOT): warnings.append(changed)
+            # The project's queuekeeper.minimum, when this Queuekeeper is older (vocaro/queuekeeper#351).
+            if short: warnings.append(short)
             unbounded = sorted(name for name, lane in config.get("lanes", {}).items()
                                if "command" in lane and "timeout" not in lane
                                and name not in config.get("queue", {}).get("preflight", []))
@@ -1945,6 +1951,8 @@ def perform(argv, report):
             warnings += lane_coverage.doctor_warnings(test_lanes)
             affected = lane_coverage.affected_paths(root, config)
             launcher_note = checkout.launcher_note(root, TOOLKIT_ROOT)
+            # A newer release tag than the one this Queuekeeper is checked out at, from origin, if it answers (#351).
+            newer = git_state.newer_release(TOOLKIT_ROOT)
             warnings += lane_coverage.affected_warnings(affected)
             print(json.dumps({"project": config["name"], "integration": config.get("integration", "direct-main"),
                 "queuekeeper": str(TOOLKIT_ROOT),
@@ -1952,7 +1960,8 @@ def perform(argv, report):
                 "missingCommands": missing, "errors": errors, "warnings": warnings,
                 "notes": list(dict.fromkeys([*(note for hosts in compared for note in remote.python_crash_notes(hosts)),
                                              *lane_coverage.skipping_notes(affected),
-                                             *([launcher_note] if launcher_note else [])])),
+                                             *([launcher_note] if launcher_note else []),
+                                             *([newer] if newer else [])])),
                 "testLanes": test_lanes, **({"affectedPaths": affected} if affected else {}),
                 "startFree": start_floors(config), "farm": compared,
                 **({"wiredBytes": wired} if wired is not None else {})},

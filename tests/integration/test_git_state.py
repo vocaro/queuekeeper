@@ -204,6 +204,52 @@ class ReleaseTests(Fixture):
         self.assertIsNone(git_state.release(self.root / "nowhere"))
 
 
+class NewerReleaseTests(Fixture):
+    """qk doctor's note when a newer release tag is out than the one Queuekeeper is checked out at (#351). The
+    remote is the fixture's bare repository on disk, so nothing reaches the network."""
+
+    def release(self, *tags):
+        for tag in tags:
+            self.commit(f"Release {tag}")
+            self.git(self.checkout, "tag", tag)
+        self.git(self.checkout, "push", "-q", "origin", "main", "--tags")
+
+    def test_a_checkout_at_a_release_tag_hears_of_the_newest_release_origin_has_with_the_update(self):
+        self.release("v1.2.0", "v1.9.0", "v1.10.0", "nightly")
+        self.git(self.checkout, "switch", "-q", "--detach", "v1.2.0")
+        said = git_state.newer_release(self.checkout)
+        self.assertIn(f"Queuekeeper at {self.checkout} is release v1.2.0, and v1.10.0 is out", said)
+        self.assertIn(f"`git -C {self.checkout} fetch --tags` and then `git -C {self.checkout} checkout v1.10.0`", said)
+
+    def test_the_newest_release_and_a_checkout_on_a_branch_say_nothing(self):
+        self.release("v1.1.0", "v1.2.0")
+        self.git(self.checkout, "switch", "-q", "--detach", "v1.2.0")
+        self.assertIsNone(git_state.newer_release(self.checkout))
+        # A tag origin has and this checkout lacks is still read from origin.
+        self.git(self.checkout, "tag", "-d", "v1.1.0")
+        self.git(self.checkout, "switch", "-q", "--detach", "HEAD~1")
+        self.git(self.checkout, "tag", "v1.1.0")
+        self.assertIn("v1.2.0 is out", git_state.newer_release(self.checkout))
+        self.git(self.checkout, "switch", "-q", "main")
+        with patch.object(git_state, "remote_releases") as asked:
+            self.assertIsNone(git_state.newer_release(self.checkout))
+        asked.assert_not_called()  # a checkout that follows main asks origin nothing
+
+    def test_an_origin_that_cannot_be_reached_or_answers_too_late_says_nothing(self):
+        self.release("v1.0.0")
+        self.git(self.checkout, "switch", "-q", "--detach", "v1.0.0")
+        self.git(self.checkout, "remote", "set-url", "origin", str(self.root / "missing.git"))
+        self.assertIsNone(git_state.remote_releases(self.checkout))
+        self.assertIsNone(git_state.newer_release(self.checkout))
+        self.git(self.checkout, "remote", "remove", "origin")
+        self.assertIsNone(git_state.newer_release(self.checkout))
+        late = subprocess.TimeoutExpired(["git", "ls-remote"], git_state.REMOTE_TAGS_TIMEOUT)
+        with patch.object(git_state.subprocess, "run", side_effect=late) as run:
+            self.assertIsNone(git_state.remote_releases(self.checkout))
+        self.assertEqual(run.call_args.kwargs["timeout"], git_state.REMOTE_TAGS_TIMEOUT)
+        self.assertEqual(run.call_args.kwargs["env"]["GIT_TERMINAL_PROMPT"], "0")
+
+
 class SharedChangesTests(Fixture):
     def test_only_changes_in_the_loaded_main_checkout_warn(self):
         (self.checkout / ".git/info/exclude").write_text("ignored\n")

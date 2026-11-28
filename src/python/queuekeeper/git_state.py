@@ -97,7 +97,43 @@ def release(checkout):
         return None
     if head.startswith("ref:"): return None
     tags = [tag for tag in (git(checkout, "tag", "--points-at", "HEAD") or "").split() if RELEASE_TAG.fullmatch(tag)]
-    return max(tags, key=lambda tag: tuple(map(int, RELEASE_TAG.fullmatch(tag).groups())), default=None)
+    return max(tags, key=release_numbers, default=None)
+
+
+def release_numbers(tag):
+    """A release tag such as v1.10.0, or a version such as 1.10.0, as numbers that compare in release order, or None."""
+    found = RELEASE_TAG.fullmatch(tag if tag.startswith("v") else f"v{tag}") if isinstance(tag, str) else None
+    return tuple(map(int, found.groups())) if found else None
+
+
+# How long `git ls-remote` may take to list the remote's tags for qk doctor before it is given up on, quietly.
+REMOTE_TAGS_TIMEOUT = 10
+
+
+def remote_releases(checkout, timeout=REMOTE_TAGS_TIMEOUT):
+    """The release tags origin has, from a bounded `git ls-remote --tags --refs origin`, or None when origin cannot be
+    asked: no remote, no network, a credential prompt or the time limit. It never raises and never prompts."""
+    quiet = {**environment(), "GIT_TERMINAL_PROMPT": "0", "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o ConnectTimeout=5"}
+    try:
+        done = subprocess.run(["git", "-C", str(checkout), "ls-remote", "--tags", "--refs", "origin"],
+                              capture_output=True, text=True, stdin=subprocess.DEVNULL, env=quiet, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0: return None
+    tags = (line.split("\t", 1)[-1].removeprefix("refs/tags/") for line in done.stdout.splitlines())
+    return [tag for tag in tags if RELEASE_TAG.fullmatch(tag)]
+
+
+def newer_release(checkout, timeout=REMOTE_TAGS_TIMEOUT):
+    """For qk doctor, a note when checkout, a main checkout of Queuekeeper detached at a release tag (release), is
+    behind the newest release tag origin has, with the commands that update it; otherwise None. A checkout that
+    follows a branch is not asked, and origin that cannot be reached says nothing (vocaro/queuekeeper#351)."""
+    installed = release(checkout)
+    if installed is None: return None
+    newest = max(remote_releases(checkout, timeout) or [], key=release_numbers, default=None)
+    if newest is None or release_numbers(newest) <= release_numbers(installed): return None
+    return (f"Queuekeeper at {checkout} is release {installed}, and {newest} is out: update every project on this Mac "
+            f"with `git -C {checkout} fetch --tags` and then `git -C {checkout} checkout {newest}`")
 
 
 def shared_changes(toolkit):
