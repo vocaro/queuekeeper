@@ -286,7 +286,11 @@ def setup(root, args):
         status = 2
         lines.append(f"{path}: left as it is: {error}")
     for line in lines: print(line)
-    if status == 0 and mode == PULL_REQUEST_QUEUE:
+    if status == 0 and mode == PULL_REQUEST_QUEUE and main_integration(root) != PULL_REQUEST_QUEUE:
+        # origin/main does not take labeled pull requests yet, so the change that makes it do so is merged by hand.
+        print("commit these files on a branch and open a pull request, which a person merges by hand: origin/main "
+              "does not land labeled pull requests until this change is on it; later pull requests are labeled")
+    elif status == 0 and mode == PULL_REQUEST_QUEUE:
         print("commit these files on a branch, open a pull request and have a person label it for the merge queue, "
               "so that every worktree has them once it lands")
     elif status == 0 and mode == PULL_REQUEST:
@@ -353,6 +357,15 @@ def check(root, args):
                       "session's directory, so it fails once a session leaves the project root; `qk agents setup` "
                       "anchors it on $CLAUDE_PROJECT_DIR")
     return 0 if rule and hooked[SESSION_START] and not broken and not wrong else 1
+
+
+def main_integration(root):
+    """origin/main's integration as last fetched, read raw, or None when it has no readable queuekeeper.json."""
+    try:
+        shown = subprocess.run(["git", "-C", str(root), "show", "refs/remotes/origin/main:queuekeeper.json"],
+                               capture_output=True, text=True, timeout=30)
+        return json.loads(shown.stdout).get("integration", DIRECT_MAIN) if shown.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError, AttributeError): return None
 
 
 def doctor_warnings(root, config):

@@ -240,11 +240,15 @@ In such a project:
   of `qk land` ([Tell your agents](#tell-your-agents)). Syncing local `main` with
   `git merge --ff-only origin/main` or `git pull --ff-only` after a merge passes.
 - **`qk doctor`** reports the project's `integration`, does not ask for a gate lane, and warns
-  when the agent instructions hold the other mode's rule.
+  when the agent instructions hold another mode's rule. In either pull-request mode it also fails
+  when `gh` is missing or not signed in, or `origin` is not a GitHub repository, since every
+  pull-request command reaches GitHub through `gh`.
 
 To move a project from one mode to the other, change `integration` and run `qk agents setup`
-again, which rewrites the rule it wrote. Moving to `"direct-main"` also needs a `gate` lane and a
-`main` that Queuekeeper may push to, so remove any rule that requires a pull request.
+again, which rewrites the rule it wrote. The mode is read from `main`, so the pull request that
+switches a project into `"pull-request-queue"` is merged by hand: labeling it queues nothing
+until it is on `main`. Moving to `"direct-main"` also needs a `gate` lane and a `main` that
+Queuekeeper may push to, so remove any rule that requires a pull request.
 
 #### Checking a pull request on your Macs
 
@@ -258,9 +262,9 @@ qk pr check 42
 
 - **What it tests.** It fetches the pull request's head and base and merges them in a checkout
   of its own under the repository's Git directory, `.git/queuekeeper-pr-checks/42`, kept between
-  checks so builds stay warm. Once GitHub says a pull request is merged or closed, the next check
-  removes its checkout, with its build output and logs. `qk disk` lists each kept checkout and
-  its size. The merge is what would land, so that is what the lanes run on.
+  checks so builds stay warm. Once GitHub says a pull request is merged or closed, its checkout
+  goes, with its build output and logs, at the next `qk pr check` of it or any other, or the
+  next `qk pr check --open` or launcher look. `qk disk` lists each kept checkout and its size. The merge is what would land, so that is what the lanes run on.
   Without a number it checks the current branch's pull request.
 - **What it runs.** Each lane runs as `qk run LANE` in that checkout, so it waits for admission
   and goes to whichever Mac has room. The default is `gate`; name others with `--lane LANE`,
@@ -321,12 +325,20 @@ ahead of it, batches and bisects as it does for `qk land`, and merges what passe
   queue: rebase the branch and queue it again. Queuing the same pull request again replaces its
   earlier entry.
 - **The queue's push must be allowed.** A ruleset that requires pull requests on `main` would
-  refuse the queue's push too, so give the account the queue pushes with a bypass.
+  refuse the queue's push too, so give the account the queue pushes with a bypass. On a
+  repository a person owns, not an organization, GitHub's bypass list names repository roles,
+  not people: `{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}` is the
+  admin role, which only the owner holds. The queue's push then shows as a bypass in the
+  ruleset's insights.
+- **`queuekeeper/gate` is the queue's alone.** Here the queue posts it: `pending` while it waits
+  and is gated, `success` once it lands. `qk pr check` posts `queuekeeper/check/LANE` instead,
+  so that a ruleset requiring `queuekeeper/gate` cannot be satisfied by a check by hand, which
+  would let an unlabeled pull request be merged outside the queue.
 - **`qk land` without `--pr`** queues no branch in such a project, and says to open a pull
   request instead.
 
 - **The pull request shows where it stands.** The queue posts its head's `queuekeeper/gate`
-  status as `qk pr check` does: `pending` while it waits and is gated, `success` once it lands,
+  status: `pending` while it waits and is gated, `success` once it lands,
   `failure` when it comes back, with why, and `error` when it is taken out or refused before it
   is queued. `gh pr list --label` can lag a label added seconds ago, so a `qk pr queue` run at once
   may not see it yet; the next look does.
@@ -4073,7 +4085,9 @@ wake you.
 
 `qk land --wait --json` prints one JSON result on standard output, with progress on standard
 error. `qk queue add --json` returns the new entry at once, and `qk queue wait ID --json` follows
-an existing one. Exit statuses are the same as in text mode.
+an existing one. With one ID, `qk queue wait --json` writes that entry's result; with several,
+`{"schemaVersion": 1, "entries": [...]}`, one result each. Exit statuses are the same as in text
+mode.
 
 `qk queue result ID --json` reads any entry, including old ones, without starting a worker. It
 exits 0 whenever the lookup succeeds, so check `state` and `terminal` for the outcome (an unknown

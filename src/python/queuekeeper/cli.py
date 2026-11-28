@@ -1898,6 +1898,9 @@ def perform(argv, report):
             warnings += lane_wait.admission_warnings(root)
             # Agent instructions telling the project's agents to reach main the way it does not (#374).
             warnings += agent_setup.doctor_warnings(root, config)
+            # What a pull-request project needs to reach its pull requests: gh, signed in, and a GitHub origin (#404).
+            from . import pull_requests
+            pull_request_errors = pull_requests.doctor_errors(root, config)
             # What a push by hand from this checkout runs, put right where it can be (git_hooks).
             warnings += git_hooks.check(root, config.get("gitHooks"), repair=not check_only)
             # Each of the farm's Macs that take work now is compared with this Mac, in the farm's order: a difference
@@ -1924,7 +1927,7 @@ def perform(argv, report):
             # Each Mac where sandbox-exec applies no profile, when a lane has a sandbox (vocaro/queuekeeper#268).
             warnings += sandbox.doctor_warnings(config)
             for check in callbacks(plugins.DOCTOR): warnings += check(root, config)
-            errors = []
+            errors = list(pull_request_errors)
             for check in callbacks(plugins.DOCTOR_CHECKS):
                 found, said = check(root, config)
                 errors += found

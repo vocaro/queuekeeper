@@ -281,6 +281,11 @@ class PullRequestCheckoutTests(Fixture):
         self.assertIn("Project pull request 7's checkout", item.reason)
         self.assertIn("the next qk pr check removes it once GitHub says the pull request is merged or closed",
                       item.reason)
+        # Listed by path however small, never folded into "and N smaller items" (vocaro/queuekeeper#401).
+        lines = []
+        disk.report(list(items.values()), None, [], 1024 ** 3, out=lines.append)
+        self.assertTrue(any(str(folder / "7") in line for line in lines))
+        self.assertFalse(any("smaller items" in line for line in lines))
         processes = [disk.Process(301, "python3", cwd=str(folder / "12"))]
         self.assertIn("in use", self.items(self.host(processes), ["pull-request-checkouts"])[str(folder / "12")].reason)
 

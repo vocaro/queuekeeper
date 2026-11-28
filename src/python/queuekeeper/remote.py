@@ -1776,6 +1776,10 @@ def dispatcher_dead(pid, start):
     except (OSError, OverflowError, ValueError, subprocess.SubprocessError): return False
 
 
+# How often stop_dead_dispatches says again that it could not stop one earlier dispatch's run.
+UNSTOPPED_TELL_EVERY = 24 * 3600
+
+
 def stop_dead_dispatches():
     """Stop each run on another Mac whose dispatcher on this Mac is proven dead, by its own journal alone, so that
     the run leaves admission and frees its checkout the usual way. Only a record another Mac has answered for is
@@ -1799,8 +1803,17 @@ def stop_dead_dispatches():
         except (OSError, subprocess.SubprocessError):
             state = None
         if state not in ("stopping", "ended", "gone"):
-            print(f"remote: dispatcher {pid} of {journal} has died, and {host} could not be told to stop its run; "
-                  "a later dispatch tries again", file=sys.stderr, flush=True)
+            # Housekeeping for an earlier dispatch, which every worker and dispatch tries again: said at most once a
+            # day for each, with its age, so that it never reads as trouble with the run under way
+            # (vocaro/queuekeeper#402).
+            now = time.time()
+            if now - float(record.get("toldUnstopped") or 0) >= UNSTOPPED_TELL_EVERY:
+                began = f", started {' '.join(str(start).split())}" if start else ""
+                print(f"remote: housekeeping for an earlier dispatch, not this run: dispatcher {pid} of {journal}"
+                      f"{began} has died, and {host} could not be told to stop its run; later dispatches try again",
+                      file=sys.stderr, flush=True)
+                with contextlib.suppress(OSError):
+                    path.write_text(json.dumps({**record, "toldUnstopped": now}))
             continue
         with contextlib.suppress(OSError): path.unlink()
         if state == "stopping":

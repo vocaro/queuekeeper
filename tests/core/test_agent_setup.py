@@ -183,6 +183,15 @@ class Agents(unittest.TestCase):
         status, said = self.qk("setup")
         self.assertEqual(status, 0, said)
         self.assertIn("landing labeled pull requests through the merge queue", said)
+        # While origin/main is not in that mode yet, as before its first landing, the change that puts it there is
+        # merged by hand (vocaro/queuekeeper#403); once it is, later pull requests are labeled.
+        self.assertIn("a person merges by hand", said)
+        identity = {**os.environ, "GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@example.com",
+                    "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@example.com"}
+        subprocess.run(["git", "-C", str(self.root), "add", "queuekeeper.json"], check=True, env=identity)
+        subprocess.run(["git", "-C", str(self.root), "commit", "-q", "-m", "Queue mode"], check=True, env=identity)
+        subprocess.run(["git", "-C", str(self.root), "update-ref", "refs/remotes/origin/main", "HEAD"], check=True)
+        status, said = self.qk("setup")
         self.assertIn("have a person label it for the merge queue", said)
         self.assertIn(agent_setup.PULL_REQUEST_QUEUE_RULE, (self.root / "AGENTS.md").read_text())
         self.assertEqual(self.qk("check")[0], 0)

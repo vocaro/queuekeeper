@@ -30,8 +30,12 @@ class PullRequestProject(Fixture):
         self.addCleanup(approved.stop)
         # Each queuekeeper/gate status the queue would post on a pull request's head: (head, state, description).
         self.statuses = []
-        posted = patch.object(pull_requests, "post", lambda root, sha, lane, state, description:
-                              self.statuses.append((sha, f"queuekeeper/{lane}", state, description)))
+        self.voices = []
+
+        def post(root, sha, lane, state, description, say=None, context=pull_requests.CONTEXT):
+            self.statuses.append((sha, context.format(lane), state, description))
+            self.voices.append(say)
+        posted = patch.object(pull_requests, "post", post)
         posted.start()
         self.addCleanup(posted.stop)
 
@@ -80,6 +84,12 @@ class PullRequestQueue(PullRequestProject):
                          [(request["head"], "queuekeeper/gate", "pending")] * 2
                          + [(request["head"], "queuekeeper/gate", "success")])
         self.assertEqual(self.statuses[-1][3], f"landed on main as {landed[:12]}")
+        # Each said in the queue's own voice, not qk pr check's (vocaro/queuekeeper#402).
+        self.assertTrue(all(say is not None for say in self.voices))
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.voices[-1]("posted")
+        self.assertRegex(said.getvalue(), r"^queue: \d\d:\d\d:\d\d posted")
+        # Its landed line counts the queue's merge among its commits, and says so.
+        self.assertIn("(2 commits, the queue's merge among them)", mq.describe(self.state(identifier)))
 
     def test_a_pull_request_taken_out_or_sent_back_says_so_on_itself(self):
         request = self.pull(7, "feature.txt")

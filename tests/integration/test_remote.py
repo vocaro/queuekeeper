@@ -3363,7 +3363,14 @@ class RemoteTests(unittest.TestCase):
             with patch.dict(os.environ, {"FAKE_UNREACHABLE": "1"}), contextlib.redirect_stderr(error):
                 remote.stop_dead_dispatches()
             self.assertIn("could not be told to stop its run", error.getvalue())
+            # Said as housekeeping for an earlier dispatch, and not again the same day (vocaro/queuekeeper#402).
+            self.assertIn("housekeeping for an earlier dispatch, not this run", error.getvalue())
             self.assertNotIn("told fake to stop", error.getvalue())
+            self.assertEqual(len(self.records()), 1)
+            again = StringIO()
+            with patch.dict(os.environ, {"FAKE_UNREACHABLE": "1"}), contextlib.redirect_stderr(again):
+                remote.stop_dead_dispatches()
+            self.assertEqual(again.getvalue(), "")
             self.assertEqual(len(self.records()), 1)
             os.kill(lane, 0)
             # Once it can be reached, the record that stayed does its work.
