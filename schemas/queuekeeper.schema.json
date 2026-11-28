@@ -749,8 +749,8 @@
           "minimum": 1
         },
         "followLandings": {
-          "description": "true has the queue fast-forward the project's main checkout to origin/main after each landing, when it is on main, clean and nothing runs from it: for a checkout other projects read, such as the folder a plugin loads from. Read from main",
-          "const": true
+          "description": "Whether the queue fast-forwards the project's main checkout to origin/main after each landing, when it is on main, clean, holds no commit of its own and nothing runs from it, so that sessions cut from it start current; true where it is unset. false leaves the checkout for a person to move. Read from main",
+          "type": "boolean"
         },
         "preflight": {
           "description": "The project's preflight lanes, in order: cheap checks, each one command, that qk land runs on an entry replayed onto origin/main before it queues it, refusing it on a finding (exit 1), and that the queue runs first in every round, ungated landing and docs-only batch. [] or leaving it out for none. Read from main",

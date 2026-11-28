@@ -135,7 +135,9 @@ def project_seed():
     (repo / "CLAUDE.md").write_text("@AGENTS.md\n")
     (repo / "queuekeeper.json").write_text(json.dumps({
         "schemaVersion": 1, "name": "fixture", "integration": "direct-main",
-        "queue": {"unread": {"paths": {"records/": "no lane reads it"}}},
+        # The fixture's main checkout is not moved after its landings, which would list every process on this Mac
+        # each time (Worker.follow); the tests of following say so themselves.
+        "queue": {"unread": {"paths": {"records/": "no lane reads it"}}, "followLandings": False},
         "lanes": {"gate": {"command": ["python3", "lane.py"]}}}))
     run(repo, "git", "add", ".")
     run(repo, "git", "commit", "-qm", "start")
