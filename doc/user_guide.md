@@ -4534,8 +4534,8 @@ python3 scripts/qk disk --json
   only what Queuekeeper and its plugins create: simulators and runtimes, DerivedData and SwiftPM
   caches, lane results kept in each Git directory, kept app builds, the checkouts runs were
   pinned to and Unity projects' generated folders. With the Apple plugin it also lists Xcode's
-  device support folders and a few large caches of macOS tools in `~/Library/Caches`. Never the
-  rest of the home folder or the volume.
+  device support folders and the system Python's bytecode for Queuekeeper's projects. Never the
+  rest of the home folder or the volume, nor other tools' caches such as Homebrew's.
 - **What it prints.** Each item's size, why it has its status, and the exact command that removes
   it. `--min-size-mb` lists small items only as totals.
 - **Progress.** Stderr names each pass and removal as it starts. Stdout is written line by line,
@@ -4566,7 +4566,7 @@ open file or an argument inside it. The rules for each category:
 | DerivedData | Its `info.plist` names a workspace that no longer exists; or it has no `info.plist`, no process, has been idle for `--min-idle-hours` (24), and holds only what a stray `xcodebuild` leaves (`Logs`, `SourcePackages`, `TestResults`, or a `Build` with only `ProfileData`). Shared folders such as `ModuleCache.noindex` are kept |
 | Xcode device support (`~/Library/Developer/Xcode/iOS DeviceSupport`, and watchOS, tvOS and visionOS) | Idle and unused, and for a beta build (its build number ends in a letter, such as `24B5110a`), or the same platform has a later release build for the same device model. A model's newest release build is an owner item. Xcode copies a folder again when a device on that build connects |
 | SwiftPM's cache | Its clones and artifacts, which SwiftPM fetches again |
-| Caches of macOS tools (`~/Library/Caches`) | Idle and unused: `com.apple.python` (the system Python's bytecode) and `com.microsoft.VSCode.ShipIt` (VS Code's past update downloads). `Homebrew` (current downloads `brew cleanup` keeps) is an owner item. No other cache there is listed |
+| The system Python's bytecode (`~/Library/Caches/com.apple.python`) | Idle and unused, for the folder of each project in `--development` that has a `queuekeeper.json` and of Queuekeeper's own checkout. The rest of that cache, and every other cache in `~/Library/Caches` (such as Homebrew's or VS Code's), is not Queuekeeper's and is not listed |
 | Unity projects' `Library`, `Temp` and `Logs` | Idle, no editor has the project open, and Git ignores the folder and tracks nothing in it. Otherwise kept |
 | Kept lane results | Beyond each lane's newest 10 commits and older than 14 days; removed, with that commit's earlier attempts, by `qk remote prune-results CHECKOUT`. Receipts are never removed |
 | Pinned checkouts | Unused by any run for a week and by any process, or a `COMMIT.ready` file with no checkout left beside it; removed by `qk disk --prune-pins` |

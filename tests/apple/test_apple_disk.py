@@ -577,43 +577,72 @@ class DeviceSupportTests(Fixture):
         self.assertIn(xcode / "watchOS DeviceSupport", roots)
 
 
-class KnownCacheTests(Fixture):
-    def cache(self, name):
-        directory = self.home / "Library/Caches" / name
-        (directory / "data").mkdir(parents=True)
+class PythonBytecodeTests(Fixture):
+    """vocaro/queuekeeper#388: `qk disk` cleans only what Queuekeeper creates, so of the system Python's bytecode
+    cache it lists the folders of Queuekeeper's projects and its own checkout, and no other cache in
+    ~/Library/Caches."""
+
+    def setUp(self):
+        super().setUp()
+        (self.main / "queuekeeper.json").write_text("{}\n")
+        self.toolkit = self.root / "toolkit"
+        self.toolkit.mkdir()
+        patcher = patch.object(apple_disk, "TOOLKIT_ROOT", self.toolkit)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def bytecode(self, checkout):
+        directory = self.home / apple_disk.PYTHON_BYTECODE / Path(checkout).relative_to("/")
+        (directory / "__pycache__").mkdir(parents=True)
+        (directory / "__pycache__/module.cpython-39.pyc").write_bytes(b"")
         return directory
 
-    def test_python_bytecode_and_vs_code_updates_are_candidates_and_homebrew_the_owner_s(self):
-        python, shipit, brew = (self.cache(name) for name in ("com.apple.python", "com.microsoft.VSCode.ShipIt",
-                                                               "Homebrew"))
-        unknown = self.cache("com.example.unknown")
-        items = self.items(self.host(), ["known-caches"])
-        for candidate in (python, shipit):
-            self.assertEqual(items[str(candidate)].status, disk.CANDIDATE, items[str(candidate)].reason)
-            self.assertEqual(items[str(candidate)].command, ["rm", "-rf", "--", str(candidate)])
-        self.assertEqual(items[str(brew)].status, disk.OWNER)
-        self.assertEqual(items[str(brew)].command, ["rm", "-rf", "--", str(brew)])
-        self.assertIn("only the owner knows whether to keep them", items[str(brew)].reason)
-        self.assertNotIn(str(unknown), items)  # only the caches it knows
+    def test_lists_queuekeeper_projects_and_its_own_checkout_and_nothing_else(self):
+        project, toolkit = self.bytecode(self.main), self.bytecode(self.toolkit)
+        other = self.development / "Other"
+        other.mkdir()
+        git(other, "init", "-q", "-b", "main")
+        elsewhere = (self.bytecode(other), self.bytecode(self.root / "scripts"))
+        for name in ("Homebrew", "com.microsoft.VSCode.ShipIt"):
+            (self.home / "Library/Caches" / name / "data").mkdir(parents=True)
+        items = self.items(self.host())
+        for folder in (project, toolkit):
+            self.assertEqual(items[str(folder)].status, disk.CANDIDATE, items[str(folder)].reason)
+            self.assertEqual(items[str(folder)].command, ["rm", "-rf", "--", str(folder)])
+            self.assertEqual(items[str(folder)].category, "python-bytecode")
+        self.assertIn("bytecode for Project", items[str(project)].reason)
+        listed = {path for path in items if "Library/Caches" in path}
+        self.assertEqual(listed, {str(project), str(toolkit)})
+        for folder in elsewhere: self.assertNotIn(str(folder), items)
 
-    def test_a_cache_in_use_or_changed_lately_is_kept(self):
-        python, brew = self.cache("com.apple.python"), self.cache("Homebrew")
-        os.utime(python / "data", (LATER - 600, LATER - 600))
-        process = disk.Process(10, "brew", cwd=str(brew / "data"))
-        items = self.items(self.host([process]), ["known-caches"])
-        self.assertEqual((items[str(python)].status, items[str(python)].command), (disk.KEPT, None))
-        self.assertEqual((items[str(brew)].status, items[str(brew)].command), (disk.KEPT, None))
-        self.assertIn("in use: PID 10 (brew)", items[str(brew)].reason)
+    def test_a_folder_in_use_or_changed_lately_is_kept(self):
+        project, toolkit = self.bytecode(self.main), self.bytecode(self.toolkit)
+        os.utime(project / "__pycache__", (LATER - 600, LATER - 600))
+        process = disk.Process(10, "python3", cwd=str(toolkit / "__pycache__"))
+        items = self.items(self.host([process]), ["python-bytecode"])
+        self.assertEqual((items[str(project)].status, items[str(project)].command), (disk.KEPT, None))
+        self.assertEqual((items[str(toolkit)].status, items[str(toolkit)].command), (disk.KEPT, None))
+        self.assertIn("in use: PID 10 (python3)", items[str(toolkit)].reason)
 
-    def test_delete_removes_a_known_cache_candidate_and_never_the_owner_s(self):
-        python, brew = self.cache("com.apple.python"), self.cache("Homebrew")
+    def test_a_link_inside_the_cache_is_not_followed(self):
+        target = self.root / "outside"
+        (target / "Development/Project").mkdir(parents=True)
+        cache = self.home / apple_disk.PYTHON_BYTECODE
+        mirror = cache / self.home.relative_to("/")
+        mirror.parent.mkdir(parents=True)
+        mirror.symlink_to(target)
+        self.assertEqual(self.items(self.host(), ["python-bytecode"]), {})
+
+    def test_delete_removes_only_the_projects_bytecode(self):
+        project = self.bytecode(self.main)
+        other = self.bytecode(self.root / "scripts")
         ledger = self.root / "ledger.jsonl"
         collect = lambda category: disk.inventory(self.host(), disk.Sizes(measure=False), [category])
         with contextlib.redirect_stdout(StringIO()):
-            removed = disk.delete(collect("known-caches"), collect, ledger)
+            removed = disk.delete(collect("python-bytecode"), collect, ledger)
         self.assertEqual(removed, 1)
-        self.assertFalse(python.exists())
-        self.assertTrue(brew.exists())
+        self.assertFalse(project.exists())
+        self.assertTrue(other.exists())
 
 
 class DeletionTests(Fixture):

@@ -1,6 +1,6 @@
 """The Apple plugin's disk items for `qk disk`: simulators and their runtimes, Xcode's DerivedData and device
-support, the SwiftPM cache, kept app builds (decision E of vocaro/vocaro-engineering#403) and the large caches macOS
-tools keep under ~/Library/Caches (vocaro/queuekeeper#292). The core lists and removes them with its own
+support, the SwiftPM cache, kept app builds (decision E of vocaro/vocaro-engineering#403) and the system Python's
+bytecode for Queuekeeper's projects (vocaro/queuekeeper#292, #388). The core lists and removes them with its own
 (queuekeeper.disk); `register` adds them."""
 from dataclasses import dataclass, field
 import datetime
@@ -35,7 +35,7 @@ CATEGORIES = {"simulator": "Simulators", "runtime": "Simulator runtimes", "deriv
               "device-support": "Xcode device support (symbols copied from connected devices)",
               "swiftpm-cache": "SwiftPM shared cache",
               "app-builds": "Kept app builds and their build caches (qk app)",
-              "known-caches": "Large caches of macOS tools in ~/Library/Caches"}
+              "python-bytecode": "The system Python's bytecode for Queuekeeper's projects (~/Library/Caches)"}
 # A runtime no device uses is removed once it has gone unused this long, as a pool member is pruned: a
 # lane may make its devices on it next.
 RUNTIME_IDLE_DAYS = 14
@@ -65,15 +65,10 @@ APP_STORE = "Library/Application Support/queuekeeper/apps"
 DEVICE_SUPPORT = "Library/Developer/Xcode"
 SYMBOLS = re.compile(r"(?:(?P<model>\S+) )?(?P<version>[0-9]+(?:\.[0-9]+)*) \((?P<build>[0-9]+[A-Z][0-9]+[a-z]?)\)"
                      r"(?: (?P<arch>\S+))?")
-# Large caches under ~/Library/Caches that a macOS tool fills and fills again as it needs: each folder's name, what
-# it holds and whether nothing in it can be wanted (CANDIDATE) or only the owner knows (OWNER) (vocaro/queuekeeper#292).
-KNOWN_CACHES = {
-    "com.apple.python": ("the bytecode the system's Python, which runs qk, compiles again as it imports", CANDIDATE),
-    "com.microsoft.VSCode.ShipIt": ("VS Code's downloads of its past updates, which it fetches again when it updates",
-                                    CANDIDATE),
-    "Homebrew": ("Homebrew's downloads of the current formulae, which `brew cleanup` keeps and which Homebrew fetches "
-                 "again only when it reinstalls one", OWNER),
-}
+# Where the system Python keeps the bytecode it compiles (its sys.pycache_prefix), in folders that repeat each
+# source file's absolute path. `qk disk` lists only the folders of Queuekeeper's projects and its own checkout: other
+# caches under ~/Library/Caches, such as Homebrew's or VS Code's, are not Queuekeeper's to clean (vocaro/queuekeeper#388).
+PYTHON_BYTECODE = "Library/Caches/com.apple.python"
 
 
 def _json(run, *arguments):
@@ -576,19 +571,29 @@ def device_support(host, usage, sizes):
     return items
 
 
-def known_caches(host, usage, sizes):
-    """The large caches macOS tools keep under ~/Library/Caches that `qk disk` knows (KNOWN_CACHES), so a Mac short
-    of space shows them beside its builds' caches: a candidate once idle and unused when nothing in it can be wanted,
-    the owner's decision otherwise (vocaro/queuekeeper#292)."""
-    root = host.home / "Library/Caches"
-    items = []
-    for name, (what, status) in KNOWN_CACHES.items():
-        folder = root / name
-        if not folder.is_dir() or folder.is_symlink(): continue
-        item = cache_item(host, usage, sizes, "known-caches", folder, what)
-        if status == OWNER and item.status == CANDIDATE:
-            item.status, item.reason = OWNER, item.reason + "; only the owner knows whether to keep them, to work offline"
-        items.append(item)
+def queuekeeper_checkouts(host):
+    """The checkouts whose Python is Queuekeeper's: each main checkout in the development folder that has a
+    queuekeeper.json, and Queuekeeper's own."""
+    found = [main for main in disk.main_checkouts(host) if (main / "queuekeeper.json").is_file()]
+    return [*found, *([] if TOOLKIT_ROOT in found else [TOOLKIT_ROOT])]
+
+
+def python_bytecode(host, usage, sizes):
+    """The system Python's bytecode for each of Queuekeeper's checkouts (queuekeeper_checkouts), which it compiles
+    again as it imports: a candidate once idle and unused. The rest of its cache is not Queuekeeper's, so it is not
+    listed (vocaro/queuekeeper#388)."""
+    root = host.home / PYTHON_BYTECODE
+    if not root.is_dir() or root.is_symlink(): return []
+    items, seen = [], set()
+    for checkout in queuekeeper_checkouts(host):
+        for path in dict.fromkeys([Path(os.path.abspath(checkout)), checkout.resolve()]):
+            folder = root / path.relative_to(path.anchor)
+            # A link on the way would have `rm -rf` reach outside the cache.
+            linked = any(part.is_symlink() for part in [folder, *folder.parents] if root in part.parents)
+            if folder in seen or linked or not folder.is_dir(): continue
+            seen.add(folder)
+            items.append(cache_item(host, usage, sizes, "python-bytecode", folder,
+                                    f"the system Python's bytecode for {checkout.name}, which it compiles again"))
     return items
 
 
@@ -675,7 +680,7 @@ def items(host, usage, sizes, wanted):
     if "device-support" in wanted: found += device_support(host, usage, sizes)
     if "swiftpm-cache" in wanted: found += swiftpm_cache(host, usage, sizes)
     if "app-builds" in wanted: found += app_builds(host, usage, sizes)
-    if "known-caches" in wanted: found += known_caches(host, usage, sizes)
+    if "python-bytecode" in wanted: found += python_bytecode(host, usage, sizes)
     return found
 
 
