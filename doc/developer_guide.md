@@ -391,7 +391,8 @@ changed paths again and dropping a record whose checkout has since reached `orig
 a fast-forward by hand. Doctor reports a checkout a person must settle as a finding and one held
 only by running processes as a note (vocaro/queuekeeper#357). The clean check (`changed_paths`)
 drops untracked session worktrees under `.claude/worktrees/`, which Git lists where that folder is
-not ignored. A project's queue that does not follow (no `queue.followLandings`) never runs the
+not ignored. Every queue follows unless its main sets `queue.followLandings` to false (`Worker.follows`, the owner's
+decision on vocaro/queuekeeper#159). A queue that does not follow never runs the
 follow, so after each landing `Worker.unfollowed` writes the same record with cause `unfollowed`
 while its main checkout is on `main` and behind, and removes it otherwise; doctor gives it as a
 note (vocaro/queuekeeper#159). Nothing here holds the queue, and

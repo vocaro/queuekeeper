@@ -9191,11 +9191,26 @@ class SharedCheckout(Fixture):
         record = self.reported()[0]
         self.assertEqual((record["cause"], record["paths"]), ("changes", [".claude/notes.md"]))
 
+    def test_a_projects_queue_with_no_setting_follows_its_landings(self):
+        """vocaro/queuekeeper#159: following is the default (owner's decision, 2026-11-27), so a project that is not
+        the toolkit and sets no queue.followLandings has its clean main checkout fast-forwarded after a landing, and
+        nothing reports it behind."""
+        config = self.config()
+        del config["queue"]["followLandings"]
+        self.publish(config, "Follow by default")
+        with patch.object(mq, "TOOLKIT_ROOT", ROOT):
+            before, after, main, said = self.land()
+        self.assertNotEqual(before, main)
+        self.assertEqual(after, main)
+        self.assertIn(f"fast-forwarded {self.repo} from {before[:12]} to {main[:12]}", said)
+        self.assertIsNone(self.reported()[0])
+
     def test_a_projects_queue_that_does_not_follow_reports_its_main_checkout_left_behind(self):
         """vocaro/queuekeeper#159: on 2026-11-26 FlexolioLib's main checkout, on main and clean, stayed 6 commits behind
         origin/main over five landings, so each session the app cut from it began behind, and status said nothing. Its
-        queue does not follow (no queue.followLandings), and only follow wrote the record. Status and doctor now say it
-        is behind, why and how to have it followed, and stop once it is at origin/main."""
+        queue did not follow, and only follow wrote the record. Following is now the default; for a project whose main
+        sets queue.followLandings to false, as the fixture's does, status and doctor say it is behind, why and how to
+        have it followed, and stop once it is at origin/main."""
         with patch.object(mq, "TOOLKIT_ROOT", ROOT):
             before, after, main, said = self.land()
             self.assertEqual(after, before)
@@ -9205,11 +9220,11 @@ class SharedCheckout(Fixture):
             self.assertIn(f"the main checkout {self.repo} is 1 commit behind origin/main, left as it is for ", words)
             self.assertIn(f"over 1 landing: {mq.UNFOLLOWED}", words)
             self.assertIn(f"  next: `git -C {self.repo} merge --ff-only origin/main` moves it now; to have each "
-                          "landing fast-forward it, set `\"queue\": {\"followLandings\": true}`", words)
+                          "landing fast-forward it, drop `\"followLandings\": false`", words)
             # A note for doctor, not a finding: the project chose not to follow.
             self.assertEqual([found for found in doctored["findings"] if found["signal"] == "shared checkout behind"],
                              [])
-            self.assertTrue(any(mq.UNFOLLOWED in hint and "followLandings\": true" in hint
+            self.assertTrue(any(mq.UNFOLLOWED in hint and "followLandings\": false" in hint
                                 for hint in doctored["hints"]))
             since = record["since"]
             self.land()
@@ -16293,14 +16308,17 @@ OFFERABLE = mq.offerable
 
 
 class FollowsTests(unittest.TestCase):
-    def test_the_toolkits_own_queue_and_a_project_whose_main_says_so_follow_their_landings(self):
+    def test_every_queue_follows_its_landings_unless_its_main_says_false(self):
+        """vocaro/queuekeeper#159: following is the default, so that the sessions cut from a project's main checkout
+        start current; a project turns it off with queue.followLandings false."""
         worker = object.__new__(mq.Worker)
         worker.queue = SimpleNamespace(main_checkout="checkout")
         with patch.object(mq.Worker, "toolkits_own", return_value=True), \
                 patch.object(mq, "config_at", side_effect=AssertionError("its own queue reads no configuration")):
             self.assertTrue(worker.follows())
         with patch.object(mq.Worker, "toolkits_own", return_value=False):
-            for config, follows in [({"queue": {"followLandings": True}}, True), ({"queue": {}}, False), ({}, False)]:
+            for config, follows in [({"queue": {"followLandings": True}}, True), ({"queue": {}}, True), ({}, True),
+                                    ({"queue": {"followLandings": False}}, False)]:
                 with self.subTest(config), patch.object(mq, "config_at", return_value=config):
                     self.assertIs(worker.follows(), follows)
             with patch.object(mq, "config_at", side_effect=ValueError("no configuration on main")):

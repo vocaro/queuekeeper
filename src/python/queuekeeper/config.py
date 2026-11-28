@@ -983,9 +983,9 @@ def merge_queue(queue, lanes):
                              "gate; and defaults, false to drop the Markdown defaults")
     if "preflight" in queue: preflight_lanes(queue, lanes)
     if "quick" in queue: quick_setting(queue, lanes)
-    if "followLandings" in queue and queue["followLandings"] is not True:
-        raise ValueError("queue.followLandings can only be true, which has the queue fast-forward the project's main "
-                         "checkout after each landing, for a checkout other projects read, such as a plugin's")
+    if "followLandings" in queue and type(queue["followLandings"]) is not bool:
+        raise ValueError("queue.followLandings is true or false: whether the queue fast-forwards the project's main "
+                         "checkout after each landing; true where it is unset")
     if "noVerdictRuns" in queue and (type(queue["noVerdictRuns"]) is not int or queue["noVerdictRuns"] < 1):
         raise ValueError("queue.noVerdictRuns is how many runs in a row may give no verdict before the batch comes back, "
                          "a positive integer")

@@ -66,13 +66,13 @@ class ConfigurationTests(unittest.TestCase):
             # A linked worktree's plugins are found from its main checkout, and a project that names none, or a
             # folder with no project, gets the default.
             self.assertEqual(config.plugins_of(root, root / "main")[1][1], str((root / "main/../kit/src/python").resolve()))
-            # A queue may follow its landings, and says so only with true.
-            for value, accepted in [(True, True), (False, False), ("yes", False)]:
+            # A queue follows its landings unless it says false (vocaro/queuekeeper#159); anything else is refused.
+            for value, accepted in [(True, True), (False, True), ("yes", False)]:
                 (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
                     "lanes": {"gate": {"command": ["true"]}}, "queue": {"followLandings": value},
                     "plugins": ["queuekeeper_apple", {"module": "kit.hooks", "path": "../kit/src/python"}]}))
                 with self.subTest(followLandings=value):
-                    if accepted: self.assertIs(config.load(root)["queue"]["followLandings"], True)
+                    if accepted: self.assertIs(config.load(root)["queue"]["followLandings"], value)
                     else:
                         with self.assertRaises(ValueError): config.load(root)
             (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "simulatorPool": "Example",

@@ -246,7 +246,7 @@ SHOWN_PATHS = 3
 # Where the Claude app keeps a project's session worktrees, inside its main checkout (Worker.stays, changed_paths).
 SESSION_WORKTREES = ".claude/worktrees"
 # Why a queue that does not follow left its main checkout behind (Worker.unfollowed).
-UNFOLLOWED = "this queue does not fast-forward it after a landing: its main does not set queue.followLandings"
+UNFOLLOWED = "this queue does not fast-forward it after a landing: its main sets queue.followLandings to false"
 # The causes of a checkout left behind that follow itself settles once the runs from it end (left_next); any other is
 # a person's to settle.
 LEFT_BY_ITSELF = ("running", "unknown")
@@ -3394,7 +3394,7 @@ def left_next(record):
         return "land those commits through the queue from a branch; the next landing then moves it past them"
     if cause == "unfollowed":
         return (f"`git -C {checkout} merge --ff-only origin/main` moves it now; to have each landing fast-forward it, "
-                'set `"queue": {"followLandings": true}` in queuekeeper.json and land that through the queue')
+                'drop `"followLandings": false` from queuekeeper.json\'s queue and land that through the queue')
     if cause in LEFT_BY_ITSELF:
         return ("nothing: the worker tries again while nothing waits and at each landing, so it follows once those "
                 "runs end")
@@ -5022,10 +5022,10 @@ class Worker:
 
     def follows(self):
         """Whether this queue fast-forwards its main checkout after a landing: the toolkit's own, which every
-        session's queuekeeper reads, and a project whose main says so (queue.followLandings), such as one whose
-        checkout holds a plugin other projects load."""
+        session's queuekeeper reads, always, and a project's unless its main sets queue.followLandings to false, so
+        that the sessions cut from its main checkout start current (owner's decision, vocaro/queuekeeper#159)."""
         if self.toolkits_own(): return True
-        try: return config_at(self.queue.main_checkout, MAIN).get("queue", {}).get("followLandings") is True
+        try: return config_at(self.queue.main_checkout, MAIN).get("queue", {}).get("followLandings", True) is not False
         except ValueError: return False
 
     def follow(self, quiet=False):
