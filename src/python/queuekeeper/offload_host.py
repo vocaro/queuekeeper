@@ -3043,8 +3043,9 @@ def require_admissions():
 def reservation_hold(key, entry, table, due_holds=True):
     """Why a record entry keeps its simulator running, or None, and what a reservation that does not
     says of itself. A recorded process is live while its PID runs with its recorded start. An entry
-    that records none, or none that can be read, or that is marked uncertain, may be live: only a
-    process known to be gone, or a PID with another start, shows that it is not. With due_holds False,
+    that records one that cannot be read, or that is marked uncertain, may be live: only a process
+    known to be gone, or a PID with another start, shows that it is not. One that records no process
+    holds until its expected release and then nothing. With due_holds False,
     an expected release not yet passed holds nothing here, for release_dead to judge."""
     if entry.get("uncertain") or entry.get("state") == "restoration-unverified":
         return f"its reservation {key} is uncertain, kept for recovery", None
@@ -3063,7 +3064,13 @@ def reservation_hold(key, entry, table, due_holds=True):
         recorded.append({"pid": entry.get("hostProcessIdentifier"), "start": entry.get("hostProcessStart")})
     owned = entry.get("ownedProcesses") or []
     recorded += owned if isinstance(owned, list) else [owned]
-    if not recorded: return f"its reservation {key} records no process, so it may be live", None
+    if not recorded:
+        # A pool simulator is recreated at once if this is wrong, so an entry that names no process to check holds
+        # nothing once its expected release has passed (owner's decision, 2026-11-27): before, such entries held
+        # their members for weeks. Until then its session holds it by its word, as a take's does.
+        if due is not None and passed(due):
+            return None, f"its reservation {key} records no process, and its expected release has passed"
+        return f"its reservation {key} records no process, so it may be live until its expected release", None
     for item in recorded:
         pid = item.get("pid") if isinstance(item, dict) else None
         if type(pid) is not int or pid <= 0:
@@ -3341,8 +3348,9 @@ def release_dead(found, entries, table, pools, listed, dry_run, stopping=None, *
                  else f"simctl would show {udid} Shutdown once this reap stopped it"
                  if dry_run and udid in stopping else f"simctl showed {udid} Shutdown")
         qualified = "early: nothing accounts for its owner" if item.get("early") else "its release passed"
-        item.update(verified=f"reap on this Mac found {pids} no longer running, by PID and start in ps; {due}; and "
-                             f"{shown}",
+        found = (f"reap on this Mac found {pids} no longer running, by PID and start in ps" if pids else
+                 "it recorded no process, which holds nothing once its release passed")
+        item.update(verified=f"{found}; {due}; and {shown}",
                     qualified=f"{qualified}, and its simulator no longer exists" if absent else qualified,
                     condition="orphan" if entry.get("activeRun") else "held")
     if dry_run:

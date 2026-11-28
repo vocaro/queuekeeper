@@ -226,6 +226,31 @@ class ReapTests(unittest.TestCase):
         self.assertReleased()
         self.assertFalse(holds.exists())
 
+    def test_an_entry_that_records_no_process_is_released_once_its_release_has_passed(self):
+        # Pagepour members stayed held for weeks by takes that recorded no holder (owner's decision, 2026-11-27):
+        # a pool simulator is remade at once if this is wrong.
+        self.states[UDID] = "Shutdown"
+        self.reserve(expectedReleaseBy=self.DUE, revision=7, takenFromPool="Pagepour")
+        report = self.reap()
+        self.assertEqual(([item["key"] for item in report["released"]], report["recoverable"]), ([NAME], []), report)
+        recovery = self.assertReleased(pids=())["recovery"]
+        self.assertIn("it recorded no process", recovery["verified"])
+        # A booted one is shut down first, in the same reap.
+        self.log.unlink()
+        self.states.pop(UDID)
+        self.reserve(expectedReleaseBy=self.DUE, revision=7)
+        self.assertStopped(self.reap())
+        self.assertReleased(pids=())
+
+    def test_an_entry_that_records_no_process_is_kept_until_its_release(self):
+        # Negative control: until then its session holds it by its word, as a take's does.
+        future = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() + 3600))
+        self.reserve(expectedReleaseBy=future, revision=7)
+        report = self.reap()
+        self.assertKept(report, "is not due for release until")
+        self.assertEqual(report["released"], [], report)
+        self.assertEqual(devices.Record(self.record).entry(NAME)["state"], "reserved")
+
     def test_one_already_shut_down_is_released_without_a_stop(self):
         self.table.clear()
         self.process(105000, 1, "/usr/bin/other")
@@ -282,7 +307,8 @@ class ReapTests(unittest.TestCase):
         for name, entry in (("release not due", self.held_entry(due=future)),
                             ("no release", self.held_entry(due=None)),
                             ("unreadable release", self.held_entry(due="soon")),
-                            ("no process", {"expectedReleaseBy": self.DUE, "revision": 7}),
+                            ("no process, release not due", {"expectedReleaseBy": future, "revision": 7}),
+                            ("no process, no release", {"revision": 7}),
                             ("no start for a running PID", self.held_entry(pid=LAUNCHD, start=None)),
                             ("a live owned process", self.held_entry(ownedProcesses=[
                                 {"pid": LAUNCHD, "start": self.table[LAUNCHD][2]}])),
@@ -1021,9 +1047,10 @@ class ReapTests(unittest.TestCase):
 
     def test_a_reservation_without_process_evidence_at_the_second_check_is_kept(self):
         # The simulator can still look old and unaccounted for when a reservation appears.
-        self.between = lambda: self.reserve(expectedReleaseBy=self.DUE)
+        future = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() + 3600))
+        self.between = lambda: self.reserve(expectedReleaseBy=future)
         report = self.reap()
-        self.assertKept(report, "second check.*records no process")
+        self.assertKept(report, "second check.*is not due for release until")
         self.assertIsNone(report["problem"], report)
         self.assertEqual((report["recoverable"], report["released"]), ([], []))
         self.assertEqual(devices.Record(self.record).entry(NAME)["state"], "reserved")
@@ -1171,13 +1198,15 @@ class ReapCommandTests(unittest.TestCase):
             with patch.object(offload_host, "reap", return_value=here or self.EMPTY) as local, \
                     patch.object(remote, "reap_there", return_value=there or self.EMPTY) as far, \
                     farm_fixture.only(*filter(None, [host])), \
-                    patch("queuekeeper_apple.disk.pools", return_value=frozenset({"Pagepour"})), redirect_stdout(output):
+                    patch("queuekeeper_apple.disk.pools", return_value=frozenset({"Pagepour"})), \
+                    patch("queuekeeper_apple.disk.logged_pools", return_value=frozenset({"Logged"})), redirect_stdout(output):
                 status = simulator_pool.main(["reap", *arguments], project)
         return status, output.getvalue(), local, far
 
     def test_with_no_options_it_acts_on_both_macs_for_every_pool(self):
         status, output, local, far = self.run_command()
-        request = {"pools": ["Example", "Pagepour"], "dry_run": False, "scan": True}
+        # A pool the hold log names counts though no checkout here names it.
+        request = {"pools": ["Example", "Logged", "Pagepour"], "dry_run": False, "scan": True}
         local.assert_called_once_with(remote.ROOT, **request)
         # `qk simulator-pool reap` also stops the leftovers it proves an ended run's; doctor only lists them.
         far.assert_called_once_with("fake", request, True)
